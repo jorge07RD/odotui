@@ -54,7 +54,7 @@ pub fn hash(password: &str) -> String {
 /// sirve para cualquier versión de Odoo y cualquier combinación de módulos.
 pub fn sql(url: &str, password_hash: Option<&str>) -> String {
     let mut s = String::from(
-        "DO $$\nBEGIN\n\
+        "DO $$\nDECLARE admin_id integer;\nBEGIN\n\
          IF to_regclass('ir_cron') IS NOT NULL THEN UPDATE ir_cron SET active = false; END IF;\n\
          IF to_regclass('ir_mail_server') IS NOT NULL THEN UPDATE ir_mail_server SET active = false; END IF;\n\
          IF to_regclass('fetchmail_server') IS NOT NULL THEN UPDATE fetchmail_server SET active = false; END IF;\n\
@@ -73,8 +73,16 @@ pub fn sql(url: &str, password_hash: Option<&str>) -> String {
           ON CONFLICT (key) DO UPDATE SET value = 'true';\n\
           END IF;\n";
     if let Some(h) = password_hash {
+        // El administrador es `base.user_admin`: en las BDs creadas desde el
+        // gestor web su login es el email que se puso, no «admin».
         s += &format!(
-            "IF to_regclass('res_users') IS NOT NULL THEN UPDATE res_users SET password = {} WHERE login = 'admin'; END IF;\n",
+            "IF to_regclass('res_users') IS NOT NULL THEN\n\
+               IF to_regclass('ir_model_data') IS NOT NULL THEN\n\
+                 SELECT res_id INTO admin_id FROM ir_model_data WHERE module = 'base' AND name = 'user_admin';\n\
+               END IF;\n\
+               IF admin_id IS NULL THEN SELECT id INTO admin_id FROM res_users WHERE login = 'admin'; END IF;\n\
+               UPDATE res_users SET password = {} WHERE id = admin_id;\n\
+             END IF;\n",
             literal(h)
         );
     }
@@ -95,9 +103,30 @@ pub async fn run(p: &Profile, db: &str, admin_password: &str, tx: &Tx) -> Result
     tx.log("crons, servidores de correo y pagos desactivados");
     tx.log(format!("web.base.url = {}", p.url()));
     if h.is_some() {
-        tx.log("contraseña de admin cambiada");
+        let login = admin_login(p, db).await.unwrap_or_else(|| "admin".into());
+        tx.log(format!(
+            "acceso de administrador: «{login}» / {admin_password}"
+        ));
     }
     Ok(())
+}
+
+/// Login del administrador (`base.user_admin`), que no siempre es «admin».
+pub async fn admin_login(p: &Profile, db: &str) -> Option<String> {
+    let by_xmlid = "SELECT u.login FROM res_users u JOIN ir_model_data d \
+                    ON d.res_id = u.id AND d.model = 'res.users' \
+                    WHERE d.module = 'base' AND d.name = 'user_admin'";
+    for q in [
+        by_xmlid,
+        "SELECT login FROM res_users WHERE login = 'admin'",
+    ] {
+        if let Ok(rows) = pg::query(p, db, q).await
+            && let Some(login) = rows.into_iter().next().and_then(|r| r.into_iter().next())
+        {
+            return Some(login);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -121,7 +150,9 @@ mod tests {
     fn sql_quotes_values() {
         let s = sql("http://x/'y", Some("$h"));
         assert!(s.contains("'http://x/''y'"));
-        assert!(s.contains("password = '$h'"));
+        assert!(s.contains("password = '$h' WHERE id = admin_id"));
+        assert!(s.contains("name = 'user_admin'"));
+        assert!(s.starts_with("DO $$\nDECLARE admin_id integer;\nBEGIN"));
         assert!(!sql("u", None).contains("res_users"));
     }
 }

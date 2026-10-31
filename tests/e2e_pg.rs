@@ -13,7 +13,7 @@ use odotui::{
     jobs::Tx,
     odoo::{
         backup::{self, Format},
-        dev, pg, restore,
+        dev, neutralize, pg, restore,
     },
 };
 use serde_json::json;
@@ -529,4 +529,47 @@ async fn ai_understands_models_and_views() {
 
     pg::drop(&p, &db).await.unwrap();
     let _ = std::fs::remove_dir_all(addons);
+}
+
+/// BDs creadas desde el gestor web: el administrador (`base.user_admin`)
+/// tiene como login el email que se puso, no «admin».
+#[tokio::test]
+async fn neutralize_finds_the_real_admin() {
+    let Some(p) = profile() else { return };
+    let db = name("admin_email");
+    pg::drop(&p, &db).await.unwrap();
+    pg::create(&p, &db).await.unwrap();
+    pg::execute(
+        &p,
+        &db,
+        "CREATE TABLE res_users (id serial primary key, login varchar, password varchar);
+         INSERT INTO res_users (id, login, password) VALUES (1, '__system__', NULL),
+             (2, 'prueba@prueba.com', 'vieja'), (6, 'demo', 'demo');
+         CREATE TABLE ir_model_data (id serial primary key, module varchar, name varchar,
+             model varchar, res_id integer);
+         INSERT INTO ir_model_data (module, name, model, res_id)
+             VALUES ('base', 'user_admin', 'res.users', 2), ('base', 'user_demo', 'res.users', 6);",
+    )
+    .await
+    .unwrap();
+
+    let (tx, lines) = Tx::detached().capturing();
+    neutralize::run(&p, &db, "admin", &tx).await.unwrap();
+    assert!(
+        one(&p, &db, "SELECT password FROM res_users WHERE id = 2")
+            .await
+            .starts_with("$pbkdf2-sha512$"),
+        "el administrador real cambió"
+    );
+    assert_eq!(
+        one(&p, &db, "SELECT password FROM res_users WHERE id = 6").await,
+        "demo"
+    );
+    let log = lines.lock().unwrap().join("\n");
+    assert!(log.contains("«prueba@prueba.com» / admin"), "{log}");
+    assert_eq!(
+        neutralize::admin_login(&p, &db).await.as_deref(),
+        Some("prueba@prueba.com")
+    );
+    pg::drop(&p, &db).await.unwrap();
 }
