@@ -12,18 +12,35 @@ use tokio::{
     sync::{mpsc::UnboundedSender, oneshot},
 };
 
-use crate::jobs::{AiRequest, Ev};
+use crate::jobs::{AiRequest, Ev, Progress};
 
 #[derive(Serialize, Deserialize)]
 struct Req {
     tool: String,
     args: Value,
+    /// Mandar el avance antes de la respuesta.
+    #[serde(default)]
+    progress: bool,
 }
 
 #[derive(Serialize, Deserialize)]
 struct Resp {
     ok: bool,
     text: String,
+}
+
+/// Lo que la TUI manda de vuelta: avances (si se pidieron) y al final la respuesta.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum Frame {
+    Resp(Resp),
+    Progress { progress: Progress },
+}
+
+async fn write_frame(w: &mut (impl AsyncWriteExt + Unpin), f: &Frame) -> std::io::Result<()> {
+    let mut out = serde_json::to_string(f).unwrap_or_default();
+    out.push('\n');
+    w.write_all(out.as_bytes()).await
 }
 
 /// `$XDG_RUNTIME_DIR/odotui.sock` (solo accesible por el usuario).
@@ -78,13 +95,24 @@ async fn handle(stream: UnixStream, events: UnboundedSender<Ev>) {
     };
     let resp = match serde_json::from_str::<Req>(&line) {
         Ok(req) => {
-            let (reply, rx) = oneshot::channel();
+            let (reply, mut rx) = oneshot::channel();
+            let (ptx, mut prx) = tokio::sync::mpsc::unbounded_channel();
             let sent = events.send(Ev::Ai(AiRequest {
                 tool: req.tool,
                 args: req.args,
                 reply,
+                progress: req.progress.then_some(ptx),
             }));
-            match (sent, rx.await) {
+            // El avance sale mientras se espera la respuesta.
+            let r = loop {
+                tokio::select! {
+                    Some(p) = prx.recv() => {
+                        let _ = write_frame(&mut w, &Frame::Progress { progress: p }).await;
+                    }
+                    r = &mut rx => break r,
+                }
+            };
+            match (sent, r) {
                 (Ok(()), Ok(r)) => match r {
                     Ok(text) => Resp { ok: true, text },
                     Err(text) => Resp { ok: false, text },
@@ -100,19 +128,22 @@ async fn handle(stream: UnixStream, events: UnboundedSender<Ev>) {
             text: format!("pedido inválido: {e}"),
         },
     };
-    if let Ok(mut out) = serde_json::to_string(&resp) {
-        out.push('\n');
-        let _ = w.write_all(out.as_bytes()).await;
-    }
+    let _ = write_frame(&mut w, &Frame::Resp(resp)).await;
 }
 
-/// Manda la herramienta a la TUI; `None` si no hay TUI escuchando.
-pub async fn request(tool: &str, args: &Value) -> Option<Result<String, String>> {
+/// Manda la herramienta a la TUI; `None` si no hay TUI escuchando. El avance,
+/// si se pide, llega por `progress`.
+pub async fn request(
+    tool: &str,
+    args: &Value,
+    progress: Option<UnboundedSender<Progress>>,
+) -> Option<Result<String, String>> {
     let stream = UnixStream::connect(socket_path()).await.ok()?;
     let (r, mut w) = stream.into_split();
     let mut line = serde_json::to_string(&Req {
         tool: tool.into(),
         args: args.clone(),
+        progress: progress.is_some(),
     })
     .ok()?;
     line.push('\n');
@@ -120,12 +151,20 @@ pub async fn request(tool: &str, args: &Value) -> Option<Result<String, String>>
         return None;
     }
     let mut lines = BufReader::new(r).lines();
-    Some(match lines.next_line().await {
-        Ok(Some(l)) => match serde_json::from_str::<Resp>(&l) {
-            Ok(Resp { ok: true, text }) => Ok(text),
-            Ok(Resp { ok: false, text }) => Err(text),
-            Err(e) => Err(format!("respuesta inválida de la TUI: {e}")),
-        },
-        _ => Err("la TUI se cerró antes de responder".into()),
-    })
+    loop {
+        return Some(match lines.next_line().await {
+            Ok(Some(l)) => match serde_json::from_str::<Frame>(&l) {
+                Ok(Frame::Progress { progress: p }) => {
+                    if let Some(tx) = &progress {
+                        let _ = tx.send(p);
+                    }
+                    continue;
+                }
+                Ok(Frame::Resp(Resp { ok: true, text })) => Ok(text),
+                Ok(Frame::Resp(Resp { ok: false, text })) => Err(text),
+                Err(e) => Err(format!("respuesta inválida de la TUI: {e}")),
+            },
+            _ => Err("la TUI se cerró antes de responder".into()),
+        });
+    }
 }

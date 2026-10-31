@@ -3,13 +3,14 @@
 use std::{path::PathBuf, sync::Mutex};
 
 use serde_json::Value;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     ai::tools,
     config::{Config, Profile},
     history::{self, Entry},
-    jobs::Tx,
+    jobs::{Progress, Tx},
 };
 
 #[derive(Default)]
@@ -61,7 +62,12 @@ impl Headless {
         Ok((cfg.profiles, current))
     }
 
-    pub async fn call(&self, tool: &str, args: &Value) -> Result<String, String> {
+    pub async fn call(
+        &self,
+        tool: &str,
+        args: &Value,
+        progress: Option<UnboundedSender<Progress>>,
+    ) -> Result<String, String> {
         let (profiles, current) = self.load()?;
         match tool {
             "status" => {
@@ -110,7 +116,8 @@ impl Headless {
             }
             st.busy = Some((tool.to_string(), cancel.clone()));
         }
-        let r = tools::call(tool, args, &p, &Tx::detached(), &cancel).await;
+        let tx = Tx::detached().reporting(progress);
+        let r = tools::call(tool, args, &p, &tx, &cancel).await;
         if let Ok(mut st) = self.state.lock() {
             st.busy = None;
         }

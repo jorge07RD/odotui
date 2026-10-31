@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
 use crate::odoo::{modules::ModuleInfo, pg::DbInfo, restore::Backup};
@@ -16,12 +17,23 @@ pub enum Sink {
     Profiles,
 }
 
+/// Avance de una tarea larga, para quien lo pidió (una IA por MCP).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum Progress {
+    /// 0.0‥1.0
+    Ratio(f64),
+    /// Bytes escritos, sin total conocido.
+    Bytes(u64),
+}
+
 /// Pedido de una IA (por MCP) a la TUI abierta.
 #[derive(Debug)]
 pub struct AiRequest {
     pub tool: String,
     pub args: serde_json::Value,
     pub reply: oneshot::Sender<Result<String, String>>,
+    /// Si la IA quiere ver el avance (`_meta.progressToken`).
+    pub progress: Option<UnboundedSender<Progress>>,
 }
 
 #[derive(Debug)]
@@ -51,6 +63,8 @@ pub struct Tx {
     pub sink: Sink,
     /// Cada `capturing()` añade un destino más; ninguno reemplaza a otro.
     capture: Vec<Arc<Mutex<Vec<String>>>>,
+    /// Además del log, el avance va aquí (`reporting`).
+    report: Option<UnboundedSender<Progress>>,
 }
 
 impl Tx {
@@ -59,6 +73,7 @@ impl Tx {
             tx: Some(tx),
             sink,
             capture: vec![],
+            report: None,
         }
     }
 
@@ -68,7 +83,17 @@ impl Tx {
             tx: None,
             sink: Sink::Profiles,
             capture: vec![],
+            report: None,
         }
+    }
+
+    /// Copia que además manda el avance a `to` (si hay).
+    pub fn reporting(&self, to: Option<UnboundedSender<Progress>>) -> Self {
+        let mut t = self.clone();
+        if to.is_some() {
+            t.report = to;
+        }
+        t
     }
 
     /// Copia que además guarda cada línea; devuelve dónde.
@@ -90,11 +115,19 @@ impl Tx {
     }
 
     pub fn progress(&self, p: f64) {
+        self.report(Progress::Ratio(p));
         self.send(Ev::Progress(self.sink, p));
     }
 
     pub fn written(&self, bytes: u64) {
+        self.report(Progress::Bytes(bytes));
         self.send(Ev::Written(self.sink, bytes));
+    }
+
+    fn report(&self, p: Progress) {
+        if let Some(r) = &self.report {
+            let _ = r.send(p);
+        }
     }
 
     pub fn send(&self, ev: Ev) {

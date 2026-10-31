@@ -2,6 +2,7 @@ pub mod addons;
 pub mod backup;
 pub mod dev;
 pub mod filestore;
+pub mod inspect;
 pub mod instance;
 pub mod modules;
 pub mod neutralize;

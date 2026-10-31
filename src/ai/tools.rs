@@ -10,7 +10,7 @@ use crate::{
     config::Profile,
     jobs::{Sink, Tx},
     odoo::{
-        backup, dev, filestore, instance, modules, neutralize, pg,
+        backup, dev, filestore, inspect, instance, modules, neutralize, pg,
         restore::{self, Request, human},
     },
 };
@@ -139,13 +139,64 @@ pub fn definitions() -> Vec<Value> {
         ),
         tool(
             "read_logs",
-            "Últimas líneas del log del servidor de Odoo (contenedor o odoo-bin local).",
+            "Últimas líneas del log del servidor de Odoo (contenedor o odoo-bin local). Al final indica el `since` para pedir después solo lo nuevo (p. ej. tras reiniciar o repetir una acción).",
             json!({
                 "lines": {"type": "integer", "default": 200},
+                "since": {"type": "string", "description": "Solo lo posterior: el valor que devolvió la llamada anterior (n.º de línea en local; fecha o duración como 5m en docker)"},
                 "filter": {"type": "string", "description": "Solo líneas que contengan este texto"},
                 "errors_only": {"type": "boolean", "default": false, "description": "Solo ERROR/CRITICAL y sus tracebacks"},
             }),
             &[],
+            true,
+            false,
+        ),
+        tool(
+            "describe_model",
+            "Campos de un modelo (ir_model_fields): tipo y relación, requerido, guardado o calculado, related, etiqueta, valores de selección y el módulo que define cada campo.",
+            json!({"database": db, "model": {"type": "string", "description": "p. ej. res.partner"}}),
+            &["database", "model"],
+            true,
+            false,
+        ),
+        tool(
+            "find_views",
+            "Vistas de un modelo, o la cadena de herencia de una vista: xml_id, tipo, prioridad, modo (primary/extension) y de cuál hereda.",
+            json!({
+                "database": db,
+                "model": {"type": "string"},
+                "xml_id": {"type": "string", "description": "modulo.nombre; muestra la vista, sus padres y sus heredadas"},
+            }),
+            &["database"],
+            true,
+            false,
+        ),
+        tool(
+            "get_view",
+            "Arquitectura XML (arch_db) de una vista y de todas las que la heredan, en el orden en que se aplican.",
+            json!({"database": db, "xml_id": {"type": "string", "description": "modulo.nombre"}}),
+            &["database", "xml_id"],
+            true,
+            false,
+        ),
+        tool(
+            "module_info",
+            "Un módulo: su __manifest__.py si es un addon propio (addons_host_dir), y con database su estado, versión instalada, dependencias, quién lo usa y si el código cambió sin actualizar.",
+            json!({"name": {"type": "string"}, "database": db}),
+            &["name"],
+            true,
+            false,
+        ),
+        tool(
+            "search_records",
+            "Busca registros con el ORM (search_read en odoo shell, sin guardar nada) y los devuelve en JSON junto con el total.",
+            json!({
+                "database": db,
+                "model": {"type": "string"},
+                "domain": {"type": "array", "default": [], "description": "Dominio de Odoo, p. ej. [[\"state\", \"=\", \"sale\"]]"},
+                "fields": {"type": "array", "items": {"type": "string"}, "default": ["display_name"]},
+                "limit": {"type": "integer", "default": 20},
+            }),
+            &["database", "model"],
             true,
             false,
         ),
@@ -444,20 +495,63 @@ async fn run(
         "read_logs" => {
             let n = num_arg(args, "lines", 200).clamp(1, 5000);
             let errors = bool_arg(args, "errors_only", false);
+            let since = opt_str(args, "since").filter(|s| !s.trim().is_empty());
             // Para errores se lee más y se resume.
-            let mut lines = instance::read(p, if errors { n.max(2000) } else { n }).await?;
+            let (mut lines, next) =
+                instance::read_since(p, since.as_deref(), if errors { n.max(2000) } else { n })
+                    .await?;
             if let Some(f) = opt_str(args, "filter").filter(|f| !f.is_empty()) {
                 lines.retain(|l| l.contains(&f));
             }
+            let foot = format!("\n── siguiente: since={next} ──");
             if errors {
                 let d = dev::digest(&lines, 0);
                 return Ok(if d.contains("── errores ──") {
-                    d
+                    d + &foot
                 } else {
-                    "sin errores en el log".into()
+                    format!("sin errores en el log{foot}")
                 });
             }
-            Ok(lines.join("\n"))
+            if lines.is_empty() {
+                return Ok(format!("nada nuevo en el log{foot}"));
+            }
+            Ok(lines.join("\n") + &foot)
+        }
+        "describe_model" => {
+            let db = db_arg(args, "database")?;
+            inspect::describe_model(p, &db, &str_arg(args, "model")?).await
+        }
+        "find_views" => {
+            let db = db_arg(args, "database")?;
+            let model = opt_str(args, "model").filter(|s| !s.is_empty());
+            let xml_id = opt_str(args, "xml_id").filter(|s| !s.is_empty());
+            inspect::find_views(p, &db, model.as_deref(), xml_id.as_deref()).await
+        }
+        "get_view" => {
+            let db = db_arg(args, "database")?;
+            inspect::get_view(p, &db, &str_arg(args, "xml_id")?).await
+        }
+        "module_info" => {
+            let db = match opt_str(args, "database").filter(|s| !s.is_empty()) {
+                Some(_) => Some(db_arg(args, "database")?),
+                None => None,
+            };
+            inspect::module_info(p, &str_arg(args, "name")?, db.as_deref()).await
+        }
+        "search_records" => {
+            let db = db_arg(args, "database")?;
+            let model = str_arg(args, "model")?;
+            let domain = args.get("domain").cloned().unwrap_or(json!([]));
+            let fields = match args.get("fields") {
+                Some(Value::Array(a)) => a
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect(),
+                _ => vec!["display_name".to_string()],
+            };
+            let limit = num_arg(args, "limit", 20).clamp(1, 500);
+            inspect::search_records(p, &db, &model, &domain, &fields, limit, cancel).await
         }
         "restore_backup" => {
             let req = Request {
@@ -626,7 +720,7 @@ mod tests {
     #[test]
     fn every_tool_has_schema_and_sink_rules() {
         let defs = definitions();
-        assert_eq!(defs.len(), 22);
+        assert_eq!(defs.len(), 27);
         for d in &defs {
             let name = d["name"].as_str().unwrap();
             assert!(d["inputSchema"]["type"] == "object", "{name}");

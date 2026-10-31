@@ -396,3 +396,137 @@ async fn backup_round_trips_in_every_format() {
     let _ = std::fs::remove_dir_all(backups);
     let _ = std::fs::remove_dir_all(filestore);
 }
+
+/// Lo justo de Odoo 17 para entender modelos, vistas y módulos (las columnas
+/// traducibles son jsonb, como desde Odoo 16).
+const SCHEMA: &str = r#"
+CREATE TABLE ir_module_module (id serial primary key, name varchar unique, state varchar,
+    latest_version varchar, application boolean, author varchar);
+INSERT INTO ir_module_module (name, state, latest_version, author) VALUES
+    ('base', 'installed', '17.0.1.3', 'Odoo S.A.'), ('acme', 'installed', '17.0.1.0', 'ACME'),
+    ('acme_extra', 'installed', '17.0.1.0', 'ACME');
+CREATE TABLE ir_module_module_dependency (id serial primary key, module_id int, name varchar);
+INSERT INTO ir_module_module_dependency (module_id, name) VALUES (2, 'base'), (3, 'acme');
+CREATE TABLE ir_model (id serial primary key, model varchar, name jsonb);
+INSERT INTO ir_model (model, name) VALUES ('acme.nota', '{"en_US": "Note", "es_ES": "Nota"}');
+CREATE TABLE ir_model_fields (id serial primary key, model varchar, name varchar, ttype varchar,
+    relation varchar, required bool, store bool, readonly bool, compute text, related varchar,
+    field_description jsonb);
+INSERT INTO ir_model_fields (model, name, ttype, relation, required, store, readonly, compute, related, field_description) VALUES
+    ('acme.nota', 'name', 'char', null, true, true, false, null, null, '{"en_US": "Name"}'),
+    ('acme.nota', 'partner_id', 'many2one', 'res.partner', false, true, false, null, null, '{"en_US": "Partner"}'),
+    ('acme.nota', 'largo', 'integer', null, false, true, true, 'for n in self: ...', null, '{"en_US": "Length"}'),
+    ('acme.nota', 'estado', 'selection', null, false, true, false, null, null, '{"en_US": "State"}');
+CREATE TABLE ir_model_fields_selection (id serial primary key, field_id int, value varchar,
+    name jsonb, sequence int);
+INSERT INTO ir_model_fields_selection (field_id, value, name, sequence) VALUES
+    (4, 'borrador', '{"en_US": "Draft"}', 1), (4, 'hecho', '{"en_US": "Done"}', 2);
+CREATE TABLE ir_model_data (id serial primary key, module varchar, name varchar, model varchar,
+    res_id int);
+INSERT INTO ir_model_data (module, name, model, res_id) VALUES
+    ('acme', 'model_acme_nota', 'ir.model', 1),
+    ('acme', 'field_acme_nota__name', 'ir.model.fields', 1),
+    ('acme', 'field_acme_nota__partner_id', 'ir.model.fields', 2),
+    ('acme_extra', 'field_acme_nota__largo', 'ir.model.fields', 3),
+    ('acme', 'nota_view_form', 'ir.ui.view', 1),
+    ('acme_extra', 'nota_view_form_extra', 'ir.ui.view', 2);
+CREATE TABLE ir_ui_view (id serial primary key, name varchar, model varchar, type varchar,
+    priority int, mode varchar, inherit_id int, active bool, arch_db jsonb);
+INSERT INTO ir_ui_view (name, model, type, priority, mode, inherit_id, active, arch_db) VALUES
+    ('acme.nota.form', 'acme.nota', 'form', 16, 'primary', null, true,
+     '{"en_US": "<form>\n  <field name=\"name\"/>\n</form>"}'),
+    ('acme.nota.form.extra', 'acme.nota', 'form', 20, 'extension', 1, true,
+     '{"en_US": "<field name=\"name\" position=\"after\">\n  <field name=\"largo\"/>\n</field>"}');
+"#;
+
+#[tokio::test]
+async fn ai_understands_models_and_views() {
+    let Some(mut p) = profile() else { return };
+    let addons = tmp("inspect_addons");
+    std::fs::create_dir_all(addons.join("acme")).unwrap();
+    std::fs::write(
+        addons.join("acme/__manifest__.py"),
+        "{'name': 'ACME', 'version': '1.1', 'depends': ['base']}",
+    )
+    .unwrap();
+    p.addons_dir = addons.display().to_string();
+    let db = name("inspect");
+    pg::drop(&p, &db).await.unwrap();
+    pg::create(&p, &db).await.unwrap();
+    pg::execute(&p, &db, SCHEMA).await.unwrap();
+    let (tx, cancel) = (Tx::detached(), CancellationToken::new());
+    let call = |tool: &'static str, args: serde_json::Value| {
+        let (p, tx, cancel) = (p.clone(), tx.clone(), cancel.clone());
+        async move { tools::call(tool, &args, &p, &tx, &cancel).await }
+    };
+
+    let m = call(
+        "describe_model",
+        json!({"database": db, "model": "acme.nota"}),
+    )
+    .await
+    .unwrap();
+    assert!(m.starts_with("acme.nota — Note (módulos: acme)"), "{m}");
+    assert!(
+        m.contains("partner_id\tmany2one→res.partner\tguardado\t«Partner»\tacme"),
+        "{m}"
+    );
+    assert!(
+        m.contains("largo\tinteger\tcalculado·guardado·solo lectura\t«Length»\tacme_extra"),
+        "{m}"
+    );
+    assert!(m.contains("[borrador, hecho]"), "{m}");
+    assert!(m.contains("name\tchar\trequerido·guardado"), "{m}");
+    let bad = call(
+        "describe_model",
+        json!({"database": db, "model": "no.existe"}),
+    )
+    .await;
+    assert!(bad.unwrap_err().contains("no existe el modelo"));
+
+    let v = call("find_views", json!({"database": db, "model": "acme.nota"}))
+        .await
+        .unwrap();
+    assert!(
+        v.contains("acme.nota_view_form\tform\t16\tprimary\tacme.nota"),
+        "{v}"
+    );
+    assert!(
+        v.contains("acme_extra.nota_view_form_extra\tform\t20\textension\t← acme.nota_view_form"),
+        "{v}"
+    );
+    let chain = call(
+        "find_views",
+        json!({"database": db, "xml_id": "acme_extra.nota_view_form_extra"}),
+    )
+    .await
+    .unwrap();
+    assert!(chain.starts_with("2 vista(s)"), "{chain}");
+
+    let arch = call(
+        "get_view",
+        json!({"database": db, "xml_id": "acme.nota_view_form"}),
+    )
+    .await
+    .unwrap();
+    let (a, b) = (
+        arch.find("<form>").unwrap(),
+        arch.find("position=\"after\"").unwrap(),
+    );
+    assert!(a < b, "la base va antes que la heredada:\n{arch}");
+    assert!(
+        arch.contains("<form>\n  <field name=\"name\"/>\n</form>"),
+        "{arch}"
+    );
+
+    let info = call("module_info", json!({"database": db, "name": "acme"}))
+        .await
+        .unwrap();
+    assert!(info.contains("installed (versión 17.0.1.0)"), "{info}");
+    assert!(info.contains("lo usan (instalados): acme_extra"), "{info}");
+    assert!(info.contains("⟳ el código es 17.0.1.1"), "{info}");
+    assert!(info.contains("\"depends\""), "{info}");
+
+    pg::drop(&p, &db).await.unwrap();
+    let _ = std::fs::remove_dir_all(addons);
+}

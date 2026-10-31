@@ -29,7 +29,7 @@ use crate::{
     form::{self, Form, Target},
     history::{self, Entry},
     input::{Action, Cmd, HitMap, Pane, Tab},
-    jobs::{AiRequest, Ev, Sink, Tx},
+    jobs::{AiRequest, Ev, Progress, Sink, Tx},
     log::{ListState, LogView},
     odoo::{
         backup, filestore, instance, modules,
@@ -1492,7 +1492,12 @@ impl App {
     /// Un pedido de una IA: se ejecuta aquí para que el usuario lo vea en vivo.
     fn on_ai(&mut self, req: AiRequest) {
         self.ai_seen = Some(Instant::now());
-        let AiRequest { tool, args, reply } = req;
+        let AiRequest {
+            tool,
+            args,
+            reply,
+            progress,
+        } = req;
         let answer = |reply: oneshot::Sender<Result<String, String>>, r: Result<String, String>| {
             let _ = reply.send(r);
         };
@@ -1583,7 +1588,7 @@ impl App {
                     let msg = format!("ocupado: {} en curso (usa cancel o espera)", b.label);
                     return answer(reply, Err(msg));
                 }
-                self.start_ai_job(sink, tool, args, p, reply);
+                self.start_ai_job(sink, tool, args, p, reply, progress);
             }
         }
     }
@@ -1609,6 +1614,12 @@ impl App {
                 self.set_tab(Tab::Modules);
             }
             "read_logs" => self.set_tab(Tab::Instance),
+            "module_info" => {
+                if let Some(db) = tools::opt_str(args, "database").filter(|d| !d.is_empty()) {
+                    self.select_module_db(db);
+                    self.set_tab(Tab::Modules);
+                }
+            }
             _ => {}
         }
     }
@@ -1630,6 +1641,7 @@ impl App {
         args: Value,
         p: Profile,
         reply: oneshot::Sender<Result<String, String>>,
+        progress: Option<UnboundedSender<Progress>>,
     ) {
         let tab = match sink {
             Sink::Dbs => Tab::Dbs,
@@ -1660,6 +1672,7 @@ impl App {
         });
         let label = format!("IA: {tool}");
         let started = self.spawn_busy(sink, label, move |tx, cancel| async move {
+            let tx = tx.reporting(progress);
             tools::call(&tool, &args, &p, &tx, &cancel)
                 .await
                 .map_err(|e| anyhow::anyhow!(e))

@@ -184,14 +184,48 @@ fn read_local(p: &Profile, n: usize) -> Result<Vec<String>> {
 
 /// Las últimas `n` líneas del log de Odoo.
 pub async fn read(p: &Profile, n: usize) -> Result<Vec<String>> {
+    Ok(read_since(p, None, n).await?.0)
+}
+
+/// Como `read`, pero solo lo nuevo desde `since` (en local, cuántas líneas ya
+/// se leyeron; en docker, lo que acepta `docker logs --since`). Devuelve
+/// también el `since` para la próxima vez.
+pub async fn read_since(
+    p: &Profile,
+    since: Option<&str>,
+    n: usize,
+) -> Result<(Vec<String>, String)> {
     if !p.is_docker() {
-        return read_local(p, n);
+        let raw = std::fs::read(log_path(p)).context("todavía no hay log de Odoo")?;
+        let text = String::from_utf8_lossy(&raw);
+        let all: Vec<&str> = text.lines().collect();
+        let from = match since {
+            Some(s) => s
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| anyhow::anyhow!("en local, since es un n.º de línea"))?
+                // Odoo se reinició: el log empezó de nuevo.
+                .min(all.len()),
+            None => 0,
+        };
+        let new = &all[from..];
+        let lines = new[new.len().saturating_sub(n)..]
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        return Ok((lines, all.len().to_string()));
     }
+    // La marca se toma antes de leer: así no se pierde nada entre llamadas.
+    let next = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     // docker logs escribe la salida de error del contenedor por stderr.
     let (tx, buf) = Tx::detached().capturing();
-    let spec = Spec::new("docker").args(["logs", "--tail", &n.to_string(), container(p)?]);
+    let mut spec = Spec::new("docker").args(["logs", "--tail", &n.to_string()]);
+    if let Some(s) = since {
+        spec = spec.args(["--since", s.trim()]);
+    }
+    let spec = spec.arg(container(p)?);
     exec::stream(&spec, None, &tx, &CancellationToken::new(), Stop::Kill).await?;
     let lines = buf.lock().map(|l| l.clone()).unwrap_or_default();
     // La primera es el `$ docker logs…` del propio stream.
-    Ok(lines.into_iter().skip(1).collect())
+    Ok((lines.into_iter().skip(1).collect(), next))
 }
