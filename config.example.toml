@@ -17,9 +17,10 @@ pg_password = "odoo"
 pg_container = "odoo17-db-1"       # psql corre aquí dentro
 odoo_container = "odoo17-web-1"
 odoo_url = "http://localhost:8069"
-backups_dir = "/home/usuario/backups"       # carpetas <nombre>/dump.sql (+ filestore/) en el host
+backups_dir = "/home/usuario/backups"       # .zip, .dump, .sql(.gz) o <nombre>/dump.sql, en el host
 filestore_dir = "/var/lib/odoo/filestore"   # dentro del contenedor de Odoo
 addons_dir = "/mnt/extra-addons"            # addons propios, ruta en el contenedor
+addons_host_dir = "/home/usuario/odoo17/addons"  # la misma carpeta en el host (marca ⟳ los cambios)
 
 # Odoo desde el código fuente y Postgres del sistema.
 [[profile]]

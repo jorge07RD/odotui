@@ -234,7 +234,7 @@ fn db_selector(f: &mut Frame, row: Rect, app: &App, hits: &mut HitMap) {
         )
     } else if changed > 0 {
         Span::styled(
-            format!("   ⟳ {changed} addon(s) con código nuevo: U los actualiza"),
+            format!("   ⟳ {changed} con código nuevo · U actualiza"),
             Style::new().fg(t.warn),
         )
     } else {
