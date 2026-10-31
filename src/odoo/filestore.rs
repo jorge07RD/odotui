@@ -83,6 +83,41 @@ pub async fn rename(p: &Profile, from: &str, to: &str, tx: &Tx) -> Result<()> {
     run(sh(p, "mv").args(["-T", &src, &dst]), tx).await
 }
 
+/// El filestore de `db` como carpeta del host, para leerlo (p. ej. al hacer un
+/// backup). En local es la carpeta misma; en docker se copia con `docker cp` a
+/// `scratch`, que el llamador borra al terminar. `None` = no tiene.
+pub async fn export(
+    p: &Profile,
+    db: &str,
+    scratch: &Path,
+    tx: &Tx,
+) -> Result<Option<std::path::PathBuf>> {
+    let Some(src) = path(p, db, tx) else {
+        return Ok(None);
+    };
+    if !p.is_docker() {
+        let src = std::path::PathBuf::from(src);
+        return Ok(src.is_dir().then_some(src));
+    }
+    if exec::capture(&sh(p, "test").args(["-d", &src]))
+        .await
+        .is_err()
+    {
+        return Ok(None);
+    }
+    let _ = std::fs::remove_dir_all(scratch);
+    run(
+        Spec::new("docker").args([
+            "cp",
+            &format!("{}:{src}", p.odoo_container),
+            &scratch.display().to_string(),
+        ]),
+        tx,
+    )
+    .await?;
+    Ok(Some(scratch.to_path_buf()))
+}
+
 /// Copia `<backup>/filestore` (en el host) como filestore de `db`.
 pub async fn import(p: &Profile, src: &Path, db: &str, tx: &Tx) -> Result<()> {
     let Some(dst) = path(p, db, tx) else {

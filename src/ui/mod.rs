@@ -490,8 +490,12 @@ fn draw_form(f: &mut Frame, app: &App, form: &Form, hits: &mut HitMap) {
         .collect();
     let total: u16 = heights.iter().sum();
     let err_h = u16::from(form.error.is_some()) * 2;
-    // Alto justo para el contenido (bordes + campos + error + botones).
-    let area = popup(screen, 72, total + err_h + 3);
+    let note_h = form
+        .note
+        .as_ref()
+        .map_or(0, |n| n.lines().count() as u16 + 1);
+    // Alto justo para el contenido (bordes + aviso + campos + error + botones).
+    let area = popup(screen, 72, note_h + total + err_h + 3);
     hits.modal_strict(screen);
     let inner = popup_frame(
         f,
@@ -501,12 +505,23 @@ fn draw_form(f: &mut Frame, app: &App, form: &Form, hits: &mut HitMap) {
     )
     .inner(Margin::new(1, 0));
 
-    let [body, error, buttons] = Layout::vertical([
+    let [note, body, error, buttons] = Layout::vertical([
+        Constraint::Length(note_h),
         Constraint::Fill(1),
         Constraint::Length(err_h),
         Constraint::Length(1),
     ])
     .areas(inner);
+    if let Some(n) = &form.note {
+        let lines: Vec<Line> = n
+            .lines()
+            .map(|l| {
+                let c = if l.starts_with('⚠') { t.warn } else { t.dim };
+                Line::styled(l.to_string(), Style::new().fg(c))
+            })
+            .collect();
+        f.render_widget(Paragraph::new(lines), note);
+    }
     let max = total.saturating_sub(body.height) as usize;
     // Sin scroll manual, el campo enfocado queda a la vista.
     let focus_top: u16 = heights[..form.focus.min(heights.len())].iter().sum();

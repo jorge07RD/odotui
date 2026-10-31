@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod dev;
 pub mod filestore;
 pub mod instance;

@@ -32,7 +32,7 @@ use crate::{
     jobs::{AiRequest, Ev, Sink, Tx},
     log::{ListState, LogView},
     odoo::{
-        filestore, instance, modules,
+        backup, filestore, instance, modules,
         modules::ModuleInfo,
         neutralize, pg,
         pg::DbInfo,
@@ -98,7 +98,10 @@ pub struct App {
     pub filtering: Option<Pane>,
     tx: UnboundedSender<Ev>,
     pub busy: Option<Busy>,
-    pub progress: Option<f64>,
+    /// Progreso (0‥1) del trabajo en curso y el log al que pertenece.
+    pub progress: Option<(Sink, f64)>,
+    /// Bytes escritos de una salida sin total (un `pg_dump`).
+    pub written: Option<u64>,
     pub spin: usize,
     ticks: u64,
     pub quit: bool,
@@ -171,6 +174,7 @@ impl App {
             tx,
             busy: None,
             progress: None,
+            written: None,
             spin: 0,
             ticks: 0,
             quit: false,
@@ -247,10 +251,12 @@ impl App {
         };
         app.modules = vec![m("base", "installed"), m("sale", "installed")];
         app.backups = vec![Backup {
-            name: "acme_prod_2025-10-30".into(),
+            name: "acme_prod_2025-10-30.zip".into(),
+            kind: restore::Kind::Zip,
             dump: Some(1 << 20),
             filestore: true,
             modified: None,
+            manifest: None,
         }];
         app
     }
@@ -511,7 +517,8 @@ impl App {
     pub fn on_ev(&mut self, ev: Ev) {
         match ev {
             Ev::Log(sink, line) => self.log_mut(sink).push(line),
-            Ev::Progress(p) => self.progress = Some(p),
+            Ev::Progress(sink, p) => self.progress = Some((sink, p)),
+            Ev::Written(_, n) => self.written = Some(n),
             Ev::Done(sink, r) => self.on_done(sink, r),
             Ev::Dbs(g, r) if g == self.generation => {
                 self.dbs_loading = false;
@@ -618,7 +625,15 @@ impl App {
                 }
                 self.refresh_dbs();
             }
-            Sink::Dbs => self.refresh_dbs(),
+            Sink::Dbs => {
+                // El progreso de un backup no se queda en pantalla.
+                if self.progress.is_some_and(|(s, _)| s == Sink::Dbs) {
+                    self.progress = None;
+                }
+                self.written = None;
+                self.refresh_dbs();
+                self.refresh_backups();
+            }
             Sink::Modules => {
                 self.refresh_modules();
                 // Una IA decide sola si reinicia; al usuario se le pregunta.
@@ -885,6 +900,11 @@ impl App {
                     self.form = Some(Form::neutralize(&db.name));
                 }
             }
+            Cmd::DbBackup => {
+                if let Some(db) = self.selected_db() {
+                    self.form = Some(Form::backup(&db.name));
+                }
+            }
             Cmd::DbRestoreHere => {
                 if let Some(db) = self.selected_db().map(|d| d.name.clone()) {
                     self.toast(format!("elige el backup para «{db}»"));
@@ -1053,13 +1073,28 @@ impl App {
             return self.toast("no hay backup seleccionado");
         };
         if b.dump.is_none() {
-            return self.toast("esa carpeta no tiene dump.sql");
+            return self.toast("ese backup no trae dump.sql");
         }
         let (db, overwrite) = match &self.restore_target {
             Some(t) => (t.clone(), true),
-            None => (sanitize(&b.name), false),
+            None => (sanitize(b.stem()), false),
         };
-        self.form = Some(Form::restore(&b.name, &db, overwrite, b.filestore));
+        let mut form = Form::restore(&b.name, &db, overwrite, b.filestore);
+        form.note = restore_note(&b, self.profile_version().as_deref());
+        self.form = Some(form);
+    }
+
+    /// La versión de Odoo de este perfil: la más común entre sus BDs.
+    pub fn profile_version(&self) -> Option<String> {
+        let mut count: Vec<(String, usize)> = vec![];
+        for v in self.dbs.iter().filter_map(|d| d.version.as_deref()) {
+            let m = restore::major(v);
+            match count.iter_mut().find(|(x, _)| *x == m) {
+                Some((_, n)) => *n += 1,
+                None => count.push((m, 1)),
+            }
+        }
+        count.into_iter().max_by_key(|(_, n)| *n).map(|(v, _)| v)
     }
 
     fn save_cfg(&mut self, ok: &str) {
@@ -1197,6 +1232,22 @@ impl App {
                 });
                 Ok(())
             }
+            Target::Backup(db) => {
+                let p = p.ok_or("sin perfil")?;
+                let format =
+                    backup::Format::parse(&form.value("format")).map_err(|e| e.to_string())?;
+                let with_fs = form.checked("filestore");
+                let db = db.clone();
+                self.focus = Pane::DbLog;
+                self.db_log.clear();
+                self.written = None;
+                self.spawn_busy(Sink::Dbs, format!("backup de {db}"), {
+                    move |tx, cancel| async move {
+                        backup::run(&p, &db, format, with_fs, &tx, &cancel).await
+                    }
+                });
+                Ok(())
+            }
             Target::Neutralize(db) => {
                 let p = p.ok_or("sin perfil")?;
                 let db = db.clone();
@@ -1223,7 +1274,7 @@ impl App {
         if self.spawn_busy(Sink::Restore, label, move |tx, cancel| async move {
             restore::run(req, &tx, &cancel).await
         }) {
-            self.progress = Some(0.0);
+            self.progress = Some((Sink::Restore, 0.0));
             self.restore_target = None;
             if let Some(b) = &mut self.busy {
                 b.restore = Some(meta);
@@ -1471,7 +1522,7 @@ impl App {
         if started && let Some(b) = &mut self.busy {
             b.reply = Some(reply);
             if restore.is_some() {
-                self.progress = Some(0.0);
+                self.progress = Some((Sink::Restore, 0.0));
                 b.restore = restore;
             }
         }
@@ -1490,6 +1541,7 @@ impl App {
             ("BDs: renombrar la seleccionada", Cmd::DbRename),
             ("BDs: neutralizar la seleccionada", Cmd::DbNeutralize),
             ("BDs: borrar la seleccionada", Cmd::DbDrop),
+            ("BDs: backup de la seleccionada…", Cmd::DbBackup),
             (
                 "BDs: restaurar un backup sobre la seleccionada",
                 Cmd::DbRestoreHere,
@@ -1695,6 +1747,7 @@ impl App {
             (Tab::Dbs, KeyCode::Char('x')) => Cmd::DbNeutralize,
             (Tab::Dbs, KeyCode::Char('s')) => Cmd::DbRestoreHere,
             (Tab::Dbs, KeyCode::Char('m')) => Cmd::DbModules,
+            (Tab::Dbs, KeyCode::Char('b')) => Cmd::DbBackup,
             (Tab::Restore, KeyCode::Char('r')) => Cmd::Refresh,
             (Tab::Restore, KeyCode::Char('R')) => Cmd::Restore,
             (Tab::Instance, KeyCode::Char('s')) => Cmd::InstStart,
@@ -1847,6 +1900,23 @@ impl App {
     }
 }
 
+/// Qué dice el manifest del backup y si su versión choca con la del perfil.
+fn restore_note(b: &Backup, profile: Option<&str>) -> Option<String> {
+    let m = b.manifest.as_ref()?;
+    let v = restore::major(&m.version);
+    let mut note = format!("Odoo {v} · BD «{}» · {} módulo(s)", m.db_name, m.modules);
+    if !m.pg_version.is_empty() {
+        note += &format!(" · Postgres {}", m.pg_version);
+    }
+    if let Some(p) = profile
+        && !v.is_empty()
+        && p != v
+    {
+        note += &format!("\n⚠ las BDs de este perfil son Odoo {p}: puede no arrancar");
+    }
+    Some(note)
+}
+
 /// Argumentos de una IA en una línea, para el log (el código va aparte).
 fn brief(args: &Value) -> String {
     let mut a = args.clone();
@@ -1936,6 +2006,26 @@ async fn test_profile(p: &Profile, tx: &Tx) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restore_note_warns_on_other_versions() {
+        let mut b = App::for_tests().backups[0].clone();
+        assert_eq!(restore_note(&b, Some("17.0")), None);
+        b.manifest = Some(restore::Manifest {
+            version: "16.0".into(),
+            db_name: "acme".into(),
+            pg_version: "15.4".into(),
+            modules: 120,
+        });
+        let n = restore_note(&b, Some("17.0")).unwrap();
+        assert!(
+            n.starts_with("Odoo 16.0 · BD «acme» · 120 módulo(s)"),
+            "{n}"
+        );
+        assert!(n.contains("⚠ las BDs de este perfil son Odoo 17.0"));
+        assert!(!restore_note(&b, Some("16.0")).unwrap().contains('⚠'));
+        assert_eq!(App::for_tests().profile_version().as_deref(), Some("17.0"));
+    }
 
     #[test]
     fn sanitizes_backup_names() {

@@ -44,13 +44,19 @@ pub fn literal(s: &str) -> String {
 
 /// `psql` conectado a `db`, con la contraseña por entorno.
 pub fn psql(p: &Profile, db: &str) -> Spec {
+    client(p, "psql", &["-X"]).args(["-d", db])
+}
+
+/// Un cliente de Postgres (`psql`, `pg_dump`, `pg_restore`) con los datos de
+/// conexión del perfil; en docker corre en el contenedor de la BD.
+pub fn client(p: &Profile, program: &str, first: &[&str]) -> Spec {
     let in_container = p.is_docker() && !p.pg_container.is_empty();
     let host = if in_container {
         "127.0.0.1"
     } else {
         &p.pg_host
     };
-    let mut s = Spec::new("psql").arg("-X");
+    let mut s = Spec::new(program).args(first.iter().copied());
     if !host.is_empty() {
         s = s.args(["-h", host]);
     }
@@ -58,8 +64,7 @@ pub fn psql(p: &Profile, db: &str) -> Spec {
     if !p.pg_user.is_empty() {
         s = s.args(["-U", &p.pg_user]);
     }
-    s.args(["-d", db])
-        .env("PGPASSWORD", &p.pg_password)
+    s.env("PGPASSWORD", &p.pg_password)
         .inside(if in_container { &p.pg_container } else { "" })
 }
 

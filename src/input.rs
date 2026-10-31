@@ -83,6 +83,7 @@ pub enum Cmd {
     DbRename,
     DbNeutralize,
     DbRestoreHere,
+    DbBackup,
     DbModules,
     Restore,
     InstStart,

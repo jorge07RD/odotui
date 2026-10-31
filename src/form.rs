@@ -46,6 +46,7 @@ pub enum Target {
     Duplicate(String),
     Rename(String),
     Neutralize(String),
+    Backup(String),
 }
 
 #[derive(Debug, PartialEq)]
@@ -62,6 +63,8 @@ pub struct Form {
     pub fields: Vec<Field>,
     pub focus: usize,
     pub error: Option<String>,
+    /// Aviso fijo arriba de los campos (p. ej. la versión de un backup).
+    pub note: Option<String>,
     pub scroll: usize,
     stash: HashMap<&'static str, String>,
 }
@@ -78,6 +81,7 @@ impl Form {
             fields: vec![],
             focus: 0,
             error: None,
+            note: None,
             scroll: 0,
             stash,
         };
@@ -148,6 +152,11 @@ impl Form {
             Target::Neutralize(db.into()),
             stash,
         )
+    }
+
+    pub fn backup(db: &str) -> Self {
+        let stash = HashMap::from([("format", "zip".to_string()), ("filestore", yes(true))]);
+        Self::new(format!("Backup de {db}"), Target::Backup(db.into()), stash)
     }
 
     /// Reconstruye los campos según el destino (y el modo, en perfiles).
@@ -228,6 +237,15 @@ impl Form {
             }
             Target::Duplicate(_) | Target::Rename(_) => {
                 specs.push(("name", "Nuevo nombre", "letras, números, _ - .", Text));
+            }
+            Target::Backup(_) => {
+                specs.push((
+                    "format",
+                    "Formato",
+                    "",
+                    Select(vec!["zip".into(), "dump".into()]),
+                ));
+                specs.push(("filestore", "Incluir filestore", "solo en zip", Check));
             }
             Target::Neutralize(_) => {
                 specs.push((

@@ -4,16 +4,17 @@
 //! van separados, así un nombre de BD no puede inyectar nada.
 
 use std::{
+    io::Read,
     path::PathBuf,
     process::Stdio,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
     process::Command,
@@ -33,12 +34,78 @@ pub struct Spec {
 }
 
 /// Lo que se manda por stdin.
-#[derive(Debug, Clone)]
 pub enum Input {
     /// Un archivo, con progreso (p. ej. `dump.sql`).
     File(PathBuf),
     /// Texto corto (p. ej. código para `odoo shell`).
     Bytes(Vec<u8>),
+    /// Cualquier lector (una entrada de un zip, un `.gz`…). Se lee en un hilo
+    /// aparte; el progreso lo da el `Meter`, que puede contar otra capa (p. ej.
+    /// los bytes comprimidos).
+    Reader(Box<dyn Read + Send>, Meter),
+}
+
+impl std::fmt::Debug for Input {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Input::File(p) => write!(f, "File({})", p.display()),
+            Input::Bytes(b) => write!(f, "Bytes({})", b.len()),
+            Input::Reader(_, m) => write!(f, "Reader({})", m.total),
+        }
+    }
+}
+
+/// Cuánto se lleva leído de un total conocido.
+#[derive(Debug, Clone, Default)]
+pub struct Meter {
+    pub done: Arc<AtomicU64>,
+    pub total: u64,
+}
+
+impl Meter {
+    pub fn new(total: u64) -> Self {
+        Self {
+            done: Arc::default(),
+            total,
+        }
+    }
+
+    pub fn ratio(&self) -> f64 {
+        self.done.load(Ordering::Relaxed) as f64 / self.total.max(1) as f64
+    }
+}
+
+/// Lector que suma lo leído en un `Meter`.
+pub struct Counted<R> {
+    inner: R,
+    done: Arc<AtomicU64>,
+}
+
+impl<R: Read> Counted<R> {
+    pub fn new(inner: R, meter: &Meter) -> Self {
+        Self {
+            inner,
+            done: meter.done.clone(),
+        }
+    }
+}
+
+impl<R: Read> Read for Counted<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.done.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
+    }
+}
+
+/// Adónde va stdout.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Output {
+    /// Al log, línea a línea.
+    Log,
+    /// A un archivo, tal cual (p. ej. lo que escribe `pg_dump`); el progreso
+    /// son los bytes escritos.
+    File(PathBuf),
 }
 
 impl Spec {
@@ -223,6 +290,42 @@ pub async fn stream(
     cancel: &CancellationToken,
     stop: Stop,
 ) -> Result<usize> {
+    stream_to(spec, stdin, Output::Log, tx, cancel, stop).await
+}
+
+/// Copia stdout a un archivo avisando de los bytes escritos cada tanto.
+async fn to_file(mut r: impl AsyncRead + Unpin, path: PathBuf, tx: Tx) -> Result<u64> {
+    let mut file = tokio::fs::File::create(&path)
+        .await
+        .with_context(|| format!("no pude crear {}", path.display()))?;
+    let mut chunk = vec![0u8; 256 * 1024];
+    let (mut written, mut last) = (0u64, Instant::now());
+    loop {
+        let n = r.read(&mut chunk).await?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&chunk[..n]).await?;
+        written += n as u64;
+        if last.elapsed() >= Duration::from_millis(200) {
+            last = Instant::now();
+            tx.written(written);
+        }
+    }
+    file.flush().await?;
+    tx.written(written);
+    Ok(written)
+}
+
+/// Como `stream`, eligiendo adónde va stdout.
+pub async fn stream_to(
+    spec: &Spec,
+    stdin: Option<Input>,
+    output: Output,
+    tx: &Tx,
+    cancel: &CancellationToken,
+    stop: Stop,
+) -> Result<usize> {
     tx.log(format!("$ {}", spec.display()));
     let mut child = spec
         .command(stdin.is_some())
@@ -230,10 +333,13 @@ pub async fn stream(
         .map_err(|e| not_found(spec, e))?;
     let pid = child.id();
     let errors = Arc::new(AtomicUsize::new(0));
-    let out = child
-        .stdout
-        .take()
-        .map(|o| tokio::spawn(pump(o, tx.clone(), errors.clone())));
+    let (mut out, mut saved) = (None, None);
+    if let Some(o) = child.stdout.take() {
+        match &output {
+            Output::Log => out = Some(tokio::spawn(pump(o, tx.clone(), errors.clone()))),
+            Output::File(path) => saved = Some(tokio::spawn(to_file(o, path.clone(), tx.clone()))),
+        }
+    }
     let err = child
         .stderr
         .take()
@@ -269,6 +375,43 @@ pub async fn stream(
                     }
                 }
                 }
+                (Some(Input::Reader(r, meter)), Some(mut w)) => {
+                    // La lectura bloquea: en un hilo, con unos pocos trozos en vuelo.
+                    let (ctx, mut crx) = tokio::sync::mpsc::channel::<std::io::Result<Vec<u8>>>(4);
+                    let reader = tokio::task::spawn_blocking(move || {
+                        let mut r = r;
+                        loop {
+                            let mut chunk = vec![0u8; 256 * 1024];
+                            match r.read(&mut chunk) {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    chunk.truncate(n);
+                                    if ctx.blocking_send(Ok(chunk)).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = ctx.blocking_send(Err(e));
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                    let mut last = -1i64;
+                    while let Some(chunk) = crx.recv().await {
+                        let chunk = chunk.context("no pude leer el backup")?;
+                        if w.write_all(&chunk).await.is_err() {
+                            break;
+                        }
+                        let pct = (meter.ratio() * 1000.0) as i64;
+                        if pct != last {
+                            last = pct;
+                            tx.progress(meter.ratio().min(1.0));
+                        }
+                    }
+                    drop(crx);
+                    let _ = reader.await;
+                }
                 _ => {}
             }
             // La entrada ya se cerró (al soltar `w`): el proceso ve EOF.
@@ -299,6 +442,9 @@ pub async fn stream(
         }
     };
     drain(out, err).await;
+    if let Some(h) = saved {
+        h.await??;
+    }
     if !status.success() {
         bail!("{} terminó con {status}", spec.program);
     }

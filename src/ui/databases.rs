@@ -13,18 +13,42 @@ use super::widgets::{self, Btn, cell, rcell};
 use crate::{
     app::App,
     input::{Action, Cmd, HitMap, Pane},
+    jobs::Sink,
     odoo::restore::human,
 };
 
 pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     let t = &app.theme;
     let log_h = if app.db_log.is_empty() { 0 } else { 9 };
-    let [bar, main, log_area] = Layout::vertical([
+    // Un backup en curso: barra al comprimir, MB escritos mientras corre pg_dump.
+    let backing_up = app.busy.as_ref().is_some_and(|b| b.sink == Sink::Dbs);
+    let progress = app
+        .progress
+        .filter(|(s, _)| *s == Sink::Dbs && backing_up)
+        .map(|(_, p)| p);
+    let gauge_h = u16::from(progress.is_some() || backing_up && app.written.is_some());
+    let [bar, main, gauge, log_area] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Fill(1),
+        Constraint::Length(gauge_h),
         Constraint::Length(log_h),
     ])
     .areas(area);
+    if let Some(p) = progress {
+        widgets::gauge(f, gauge, app, p, format!("{:.1}% comprimiendo", p * 100.0));
+    } else if let Some(n) = app.written.filter(|_| backing_up) {
+        f.render_widget(
+            Line::from(vec![
+                Span::styled(format!(" {} ", super::spinner(app)), t.accent),
+                Span::styled(
+                    format!("{} escritos", human(n)),
+                    Style::new().fg(t.fg).bold(),
+                ),
+                Span::styled("  (pg_dump no sabe el total)", t.dim),
+            ]),
+            gauge,
+        );
+    }
 
     let idle = app.busy.is_none();
     let has = app.selected_db().is_some();
@@ -35,7 +59,8 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
         &[
             Btn::new("r", "Refrescar", Action::Cmd(Cmd::Refresh)),
             Btn::new("m", "Módulos", Action::Cmd(Cmd::DbModules)).enabled(has),
-            Btn::new("s", "Restaurar aquí", Action::Cmd(Cmd::DbRestoreHere)).enabled(has && idle),
+            Btn::new("b", "Backup", Action::Cmd(Cmd::DbBackup)).enabled(has && idle),
+            Btn::new("s", "Restaurar", Action::Cmd(Cmd::DbRestoreHere)).enabled(has && idle),
             Btn::new("c", "Duplicar", Action::Cmd(Cmd::DbDuplicate)).enabled(has && idle),
             Btn::new("n", "Renombrar", Action::Cmd(Cmd::DbRename)).enabled(has && idle),
             Btn::new("x", "Neutralizar", Action::Cmd(Cmd::DbNeutralize)).enabled(has && idle),

@@ -229,6 +229,19 @@ pub fn card(f: &mut Frame, area: Rect, app: &App, icon: &str, text: &str) -> Rec
     inner
 }
 
+/// Barra de progreso de una fila.
+pub fn gauge(f: &mut Frame, area: Rect, app: &App, ratio: f64, label: String) {
+    let t = &app.theme;
+    f.render_widget(
+        ratatui::widgets::Gauge::default()
+            .ratio(ratio.clamp(0.0, 1.0))
+            .label(label)
+            .gauge_style(Style::new().fg(t.accent).bg(t.surface))
+            .use_unicode(true),
+        area,
+    );
+}
+
 /// Cabecera de columnas de una lista.
 pub fn header(f: &mut Frame, row: Rect, app: &App, text: String) {
     let t = &app.theme;

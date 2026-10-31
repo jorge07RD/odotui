@@ -10,7 +10,7 @@ use crate::{
     config::Profile,
     jobs::{Sink, Tx},
     odoo::{
-        dev, filestore, instance, modules, neutralize, pg,
+        backup, dev, filestore, instance, modules, neutralize, pg,
         restore::{self, Request, human},
     },
 };
@@ -19,9 +19,11 @@ use crate::{
 pub fn sink(tool: &str) -> Option<Sink> {
     Some(match tool {
         "restore_backup" => Sink::Restore,
-        "drop_database" | "duplicate_database" | "rename_database" | "neutralize_database" => {
-            Sink::Dbs
-        }
+        "drop_database"
+        | "duplicate_database"
+        | "rename_database"
+        | "neutralize_database"
+        | "backup_database" => Sink::Dbs,
         "install_modules" | "update_modules" | "run_tests" | "odoo_shell" | "scaffold_module" => {
             Sink::Modules
         }
@@ -105,7 +107,7 @@ pub fn definitions() -> Vec<Value> {
         ),
         tool(
             "list_backups",
-            "Lista las carpetas de backup (<backups_dir>/<carpeta>/dump.sql, con o sin filestore/).",
+            "Lista los backups de backups_dir: carpetas <carpeta>/dump.sql (+ filestore/), .zip del gestor de Odoo / Odoo.sh (con la versión de su manifest), .dump de pg_dump -Fc y .sql / .sql.gz.",
             json!({}),
             &[],
             true,
@@ -150,9 +152,9 @@ pub fn definitions() -> Vec<Value> {
         ),
         tool(
             "restore_backup",
-            "Restaura una carpeta de backup en una BD: crea la BD, carga dump.sql, copia el filestore y (por defecto) neutraliza (sin crons ni correo, admin con password conocido). Si la BD existe hace falta overwrite=true y se BORRA antes.",
+            "Restaura un backup en una BD: crea la BD, carga el dump (carpeta, .zip, .dump, .sql o .sql.gz), copia el filestore y (por defecto) neutraliza (sin crons ni correo, admin con password conocido). Si la BD existe hace falta overwrite=true y se BORRA antes.",
             json!({
-                "backup": {"type": "string", "description": "Nombre de la carpeta (ver list_backups)"},
+                "backup": {"type": "string", "description": "Nombre de la carpeta o archivo (ver list_backups)"},
                 "database": db,
                 "overwrite": {"type": "boolean", "default": false},
                 "neutralize": {"type": "boolean", "default": true},
@@ -162,6 +164,18 @@ pub fn definitions() -> Vec<Value> {
             &["backup", "database"],
             false,
             true,
+        ),
+        tool(
+            "backup_database",
+            "Hace un backup de una BD en backups_dir: zip compatible con el gestor de Odoo (dump.sql + filestore/ + manifest.json) o dump de pg_dump -Fc (sin filestore). Devuelve la ruta del archivo.",
+            json!({
+                "database": db,
+                "format": {"type": "string", "enum": ["zip", "dump"], "default": "zip"},
+                "filestore": {"type": "boolean", "default": true, "description": "Solo en zip"},
+            }),
+            &["database"],
+            false,
+            false,
         ),
         tool(
             "drop_database",
@@ -358,7 +372,7 @@ async fn run(
         }
         "list_backups" => {
             let bs = restore::list(&p.backups_dir).await?;
-            let mut out = format!("{} carpeta(s) en {}:\n", bs.len(), p.backups_dir);
+            let mut out = format!("{} backup(s) en {}:\n", bs.len(), p.backups_dir);
             for b in bs {
                 let date = b
                     .modified
@@ -368,9 +382,15 @@ async fn run(
                             .to_string()
                     })
                     .unwrap_or_default();
+                let odoo = b
+                    .manifest
+                    .as_ref()
+                    .map(|m| format!("\todoo={}", restore::major(&m.version)))
+                    .unwrap_or_default();
                 out += &format!(
-                    "{}\tdump={}\tfilestore={}\t{date}\n",
+                    "{}\t{}\tdump={}\tfilestore={}{odoo}\t{date}\n",
                     b.name,
+                    b.kind.label(),
                     b.dump.map(human).unwrap_or_else(|| "NO".into()),
                     if b.filestore { "sí" } else { "no" },
                 );
@@ -443,6 +463,19 @@ async fn run(
                 admin_password: opt_str(args, "admin_password").unwrap_or_else(|| "admin".into()),
             };
             restore::run(req, tx, cancel).await
+        }
+        "backup_database" => {
+            let db = db_arg(args, "database")?;
+            let format = backup::Format::parse(&opt_str(args, "format").unwrap_or_default())?;
+            backup::run(
+                p,
+                &db,
+                format,
+                bool_arg(args, "filestore", true),
+                tx,
+                cancel,
+            )
+            .await
         }
         "drop_database" => {
             let db = db_arg(args, "database")?;
@@ -581,7 +614,7 @@ mod tests {
     #[test]
     fn every_tool_has_schema_and_sink_rules() {
         let defs = definitions();
-        assert_eq!(defs.len(), 20);
+        assert_eq!(defs.len(), 21);
         for d in &defs {
             let name = d["name"].as_str().unwrap();
             assert!(d["inputSchema"]["type"] == "object", "{name}");

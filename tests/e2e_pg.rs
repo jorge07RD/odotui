@@ -11,7 +11,10 @@ use odotui::{
     ai::tools,
     config::{Mode, Profile},
     jobs::Tx,
-    odoo::{dev, pg, restore},
+    odoo::{
+        backup::{self, Format},
+        dev, pg, restore,
+    },
 };
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -271,4 +274,125 @@ async fn mcp_tools_against_postgres() {
         .await
         .unwrap();
     assert!(!pg::exists(&p, &db).await.unwrap());
+}
+
+fn request(p: &Profile, backup: &str, db: &str) -> restore::Request {
+    restore::Request {
+        profile: p.clone(),
+        backup: backup.into(),
+        db: db.into(),
+        overwrite: true,
+        filestore: true,
+        neutralize: false,
+        admin_password: String::new(),
+    }
+}
+
+async fn counts(p: &Profile, db: &str) -> String {
+    one(
+        p,
+        db,
+        "SELECT (SELECT count(*) FROM ir_module_module) || '/' || (SELECT count(*) FROM ir_cron) \
+         || '/' || (SELECT count(*) FROM ir_config_parameter)",
+    )
+    .await
+}
+
+#[tokio::test]
+async fn backup_round_trips_in_every_format() {
+    let Some(mut p) = profile() else { return };
+    let backups = tmp("rt_backups");
+    let filestore = tmp("rt_filestore");
+    p.backups_dir = backups.display().to_string();
+    p.filestore_dir = filestore.display().to_string();
+    let src = name("rt_src");
+    pg::drop(&p, &src).await.unwrap();
+    pg::create(&p, &src).await.unwrap();
+    pg::execute(&p, &src, FIXTURE).await.unwrap();
+    std::fs::create_dir_all(filestore.join(&src).join("ab")).unwrap();
+    std::fs::write(filestore.join(&src).join("ab/abc"), "adjunto").unwrap();
+    std::fs::write(filestore.join(&src).join("ab/abd"), "otro").unwrap();
+    let want = counts(&p, &src).await;
+    let cancel = CancellationToken::new();
+
+    // zip: dump.sql + filestore + manifest, y de vuelta con otro nombre.
+    let (tx, lines) = Tx::detached().capturing();
+    let msg = backup::run(&p, &src, Format::Zip, true, &tx, &cancel)
+        .await
+        .unwrap_or_else(|e| panic!("{e:#}\n{:?}", lines.lock().unwrap()));
+    assert!(msg.contains("2 archivo(s) del filestore"), "{msg}");
+    let listed = restore::list(&p.backups_dir).await.unwrap();
+    let zip = listed
+        .iter()
+        .find(|b| b.kind == restore::Kind::Zip)
+        .expect("el zip aparece en la lista");
+    assert!(zip.filestore);
+    let m = zip.manifest.as_ref().unwrap();
+    assert_eq!(
+        (m.db_name.as_str(), m.version.as_str(), m.modules),
+        (src.as_str(), "17.0", 2)
+    );
+    let from_zip = name("rt_zip");
+    let (tx, lines) = Tx::detached().capturing();
+    restore::run(request(&p, &zip.name, &from_zip), &tx, &cancel)
+        .await
+        .unwrap_or_else(|e| panic!("{e:#}\n{:?}", lines.lock().unwrap()));
+    assert_eq!(counts(&p, &from_zip).await, want);
+    assert_eq!(
+        std::fs::read_to_string(filestore.join(&from_zip).join("ab/abd")).unwrap(),
+        "otro"
+    );
+    // La carpeta temporal del filestore no queda.
+    assert_eq!(restore::list(&p.backups_dir).await.unwrap().len(), 1);
+
+    // dump (pg_dump -Fc) → pg_restore.
+    backup::run(&p, &src, Format::Dump, false, &Tx::detached(), &cancel)
+        .await
+        .unwrap();
+    let dump = restore::list(&p.backups_dir)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|b| b.kind == restore::Kind::PgCustom)
+        .expect("el .dump aparece en la lista");
+    let from_dump = name("rt_dump");
+    let (tx, lines) = Tx::detached().capturing();
+    restore::run(request(&p, &dump.name, &from_dump), &tx, &cancel)
+        .await
+        .unwrap_or_else(|e| panic!("{e:#}\n{:?}", lines.lock().unwrap()));
+    assert_eq!(counts(&p, &from_dump).await, want);
+
+    // .sql.gz hecho a mano.
+    {
+        use std::io::Write;
+        let f = std::fs::File::create(backups.join("a_mano.sql.gz")).unwrap();
+        let mut gz = flate2::write::GzEncoder::new(f, flate2::Compression::default());
+        gz.write_all(FIXTURE.as_bytes()).unwrap();
+        gz.finish().unwrap();
+    }
+    let from_gz = name("rt_gz");
+    restore::run(
+        request(&p, "a_mano.sql.gz", &from_gz),
+        &Tx::detached(),
+        &cancel,
+    )
+    .await
+    .unwrap();
+    assert_eq!(counts(&p, &from_gz).await, want);
+
+    // Cancelado: no queda ningún archivo nuevo, ni siquiera oculto.
+    let before = std::fs::read_dir(&backups).unwrap().count();
+    let stop = CancellationToken::new();
+    stop.cancel();
+    let err = backup::run(&p, &src, Format::Zip, true, &Tx::detached(), &stop)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("cancelado"), "{err}");
+    assert_eq!(std::fs::read_dir(&backups).unwrap().count(), before);
+
+    for db in [&src, &from_zip, &from_dump, &from_gz] {
+        pg::drop(&p, db).await.unwrap();
+    }
+    let _ = std::fs::remove_dir_all(backups);
+    let _ = std::fs::remove_dir_all(filestore);
 }

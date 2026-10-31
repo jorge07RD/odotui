@@ -27,8 +27,10 @@ pub struct AiRequest {
 #[derive(Debug)]
 pub enum Ev {
     Log(Sink, String),
-    /// 0.0‥1.0
-    Progress(f64),
+    /// 0.0‥1.0, del trabajo que escribe en ese log.
+    Progress(Sink, f64),
+    /// Bytes escritos de una salida sin total conocido (p. ej. `pg_dump`).
+    Written(Sink, u64),
     /// Fin del trabajo de escritura en curso (`App::busy`).
     Done(Sink, Result<String, String>),
     /// Las listas llevan la generación del perfil para descartar respuestas viejas.
@@ -88,7 +90,11 @@ impl Tx {
     }
 
     pub fn progress(&self, p: f64) {
-        self.send(Ev::Progress(p));
+        self.send(Ev::Progress(self.sink, p));
+    }
+
+    pub fn written(&self, bytes: u64) {
+        self.send(Ev::Written(self.sink, bytes));
     }
 
     pub fn send(&self, ev: Ev) {

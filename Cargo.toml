@@ -11,6 +11,7 @@ anyhow = "1.0.104"
 base64 = "0.23.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 dirs = "7.0.0"
+flate2 = "1.1.10"
 libc = "0.2.191"
 pbkdf2 = "0.12"
 ratatui = "0.30.2"
@@ -20,6 +21,7 @@ sha2 = "0.10.9"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "process", "sync", "io-util", "io-std", "fs", "net"] }
 tokio-util = "0.7.20"
 toml = "1.1.8"
+zip = { version = "9.2.0", default-features = false, features = ["deflate-flate2"] }
 
 [profile.release]
 lto = true
