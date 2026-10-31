@@ -134,6 +134,16 @@ El ciclo típico de la IA es **entender → editar → actualizar → testear**:
 > [!WARNING]
 > `drop_database`, `restore_backup` con `overwrite`, `uninstall_modules` y `sql_query` con `write=true` son irreversibles. Las instrucciones del servidor piden a la IA confirmarlo contigo antes.
 
+### 🧠 Skill para Claude Code
+
+[`skills/odotui/`](skills/odotui/SKILL.md) le enseña a la IA a usar odotui: empezar por `status`, el ciclo entender → editar → actualizar → testear, qué operaciones son irreversibles y los problemas ya vistos con Odoo real (login del administrador, licencias, permisos de docker). Incluye la referencia de las 27 herramientas, las teclas de la TUI y `scripts/llamar.py`, para sesiones que no tienen las herramientas MCP cargadas.
+
+```bash
+ln -s ~/Projects/odotui/skills/odotui ~/.claude/skills/odotui
+```
+
+Con el enlace, el skill se actualiza junto con el repo.
+
 ## ⚙️ Perfiles
 
 `~/.config/odotui/config.toml` (ver [`config.example.toml`](config.example.toml)):
