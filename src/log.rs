@@ -69,7 +69,7 @@ pub fn fold(s: &str) -> String {
 }
 
 /// `ValueError: …`, `odoo.exceptions.UserError: …`: la última línea de un traceback.
-fn is_exception(line: &str) -> bool {
+pub fn is_exception(line: &str) -> bool {
     let Some((name, _)) = line.split_once(": ") else {
         return false;
     };

@@ -393,13 +393,18 @@ pub fn log_view(
     for (k, (i, line)) in lines.iter().skip(offset).take(h).enumerate() {
         let r = Rect::new(area.x, area.y + k as u16, area.width, 1);
         let level = log::level(line);
-        if level == Level::Error {
+        let in_block = blocks.iter().any(|b| b.contains(i));
+        // La banda roja cubre el error entero, traceback incluido.
+        if level == Level::Error || in_block {
             f.buffer_mut()
                 .set_style(r, Style::new().bg(crate::theme::mix(t.bg, t.err, 0.10)));
         }
-        let style = level_style(app, level);
-        f.render_widget(Line::styled(truncate(line, area.width as usize), style), r);
-        if blocks.iter().any(|b| b.contains(i)) {
+        // Colores por partes (hora, nivel, BD, logger, petición, traceback).
+        f.render_widget(
+            super::logfmt::format(app, line, level, area.width as usize),
+            r,
+        );
+        if in_block {
             hits.push(r, Action::LogLine(pane, *i));
         }
     }

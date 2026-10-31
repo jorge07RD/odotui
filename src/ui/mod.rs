@@ -3,6 +3,7 @@
 
 mod databases;
 mod instance;
+pub mod logfmt;
 mod modules;
 mod profiles;
 mod restore;
