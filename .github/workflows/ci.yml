@@ -13,7 +13,7 @@ jobs:
     name: fmt · clippy · tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -42,7 +42,7 @@ jobs:
     env:
       ODOTUI_E2E_PG: host=127.0.0.1 port=5432 user=odoo password=odoo
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: psql y pg_dump

@@ -14,12 +14,20 @@ Formato de [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/); las vers
 - **Tracebacks**: `y` copia el último error del log, `e` muestra solo errores y un clic en una línea roja copia su traceback (`wl-copy` u OSC 52).
 - **Aviso al terminar**: las tareas de más de 20 s mandan un `notify-send`.
 - **IA**: `describe_model`, `find_views`, `get_view`, `module_info` y `search_records` para entender el modelo de datos sin escribir SQL; `read_logs` con `since` para leer solo lo nuevo; avance de restauraciones y backups como `notifications/progress` si la llamada trae `_meta.progressToken`.
+- **Log de Odoo con colores por partes**: hora, nivel (ERROR como insignia roja, WARN en amarillo), BD, logger y mensaje; las peticiones web compactadas en método, ruta, estado HTTP coloreado, consultas y tiempo (las de 1 s o más resaltan); los tracebacks colorean archivo, línea, función y excepción, y la banda roja cubre el error entero.
+- **Aviso de licencias**: antes de instalar, actualizar o testear se avisa si un addon propio declara una licencia que Odoo no acepta (falla al actualizar con un error críptico); `module_info` también lo muestra.
 - **Calidad**: CI (fmt, clippy, tests y e2e contra Postgres 16), tests de la interfaz con `TestBackend`, `dev/docker-compose.yml` con Odoo 17 real y `scripts/mcp_smoke.py`, que recorre todas las herramientas MCP contra él. Releases con binarios para Linux (gnu y musl). Licencia MIT.
 
 ### Cambiado
 
 - El botón «Restaurar aquí» de BDs ahora se llama «Restaurar».
+- Validado contra Odoo 17 real (`scripts/mcp_smoke.py`: 36 ✓). La CI usa las versiones actuales de las acciones de GitHub (Node 24).
 - Los errores inocuos de `transaction_timeout` (un `pg_dump` más nuevo que el servidor) no cuentan como errores al restaurar.
+
+### Corregido
+
+- **Neutralizar** cambia la contraseña del administrador real (`base.user_admin`). En las BDs creadas desde el gestor web su login es el email que se puso, no «admin», y antes no se cambiaba nada. El log dice con qué login entrar.
+- **`run_tests`** usa un puerto HTTP propio: con `--test-enable` Odoo levanta su servidor web aunque se pida `--no-http`, y chocaba con el 8069 de la instancia en marcha.
 
 ## [0.1.0] - 2026-10-31
 
