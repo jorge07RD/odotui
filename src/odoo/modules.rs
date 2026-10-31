@@ -40,16 +40,27 @@ pub async fn list(p: &Profile, db: &str) -> Result<Vec<ModuleInfo>> {
 
 /// El ejecutable de Odoo del perfil, ya apuntando a su Postgres.
 pub fn odoo(p: &Profile) -> Result<Spec> {
+    odoo_sub(p, None)
+}
+
+/// Igual, con un subcomando (`shell`, `scaffold`…), que va antes de las opciones.
+pub fn odoo_sub(p: &Profile, sub: Option<&str>) -> Result<Spec> {
     if p.is_docker() {
         if p.odoo_container.is_empty() {
             bail!("el perfil no tiene contenedor de Odoo");
         }
+        let mut s = Spec::new("odoo").inside(&p.odoo_container).args(sub);
+        if sub == Some("scaffold") {
+            return Ok(s);
+        }
         // `docker exec` se salta el entrypoint de la imagen, que es quien
         // pasa los datos de la BD: hay que darlos aquí.
-        let host = if p.pg_host.is_empty() { "db" } else { &p.pg_host };
-        let mut s = Spec::new("odoo")
-            .inside(&p.odoo_container)
-            .args(["--db_host", host, "--db_port", &p.pg_port.to_string()]);
+        let host = if p.pg_host.is_empty() {
+            "db"
+        } else {
+            &p.pg_host
+        };
+        s = s.args(["--db_host", host, "--db_port", &p.pg_port.to_string()]);
         if !p.pg_user.is_empty() {
             s = s.args(["--db_user", &p.pg_user]);
         }
@@ -61,8 +72,15 @@ pub fn odoo(p: &Profile) -> Result<Spec> {
     if p.odoo_bin.is_empty() {
         bail!("el perfil no tiene odoo_bin");
     }
-    let python = if p.python.is_empty() { "python3" } else { &p.python };
-    let mut s = Spec::new(python).arg(&p.odoo_bin);
+    let python = if p.python.is_empty() {
+        "python3"
+    } else {
+        &p.python
+    };
+    let mut s = Spec::new(python).arg(&p.odoo_bin).args(sub);
+    if sub == Some("scaffold") {
+        return Ok(s);
+    }
     if !p.odoo_conf.is_empty() {
         // El .conf manda; solo se añade lo que el perfil no puede saber.
         s = s.args(["-c", &p.odoo_conf]);
@@ -100,7 +118,11 @@ pub async fn run(
         "--no-http",
     ]);
     let errors = exec::stream(&spec, None, tx, cancel, Stop::Interrupt).await?;
-    let verb = if install { "instalado(s)" } else { "actualizado(s)" };
+    let verb = if install {
+        "instalado(s)"
+    } else {
+        "actualizado(s)"
+    };
     Ok(if errors > 0 {
         format!("{list} {verb} con {errors} error(es) en el log")
     } else {
@@ -137,7 +159,10 @@ mod tests {
             pg_port: 5432,
             ..Default::default()
         };
-        assert_eq!(odoo(&p).unwrap().display(), "python3 /o/odoo-bin -c /o/o.conf");
+        assert_eq!(
+            odoo(&p).unwrap().display(),
+            "python3 /o/odoo-bin -c /o/o.conf"
+        );
         assert!(odoo(&Profile::default()).is_err());
     }
 }

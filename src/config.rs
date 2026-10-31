@@ -66,6 +66,9 @@ pub struct Profile {
     pub python: String,
     #[serde(default, skip_serializing_if = "is_empty")]
     pub odoo_conf: String,
+    /// Carpeta de addons propios tal como la ve Odoo (para `scaffold`).
+    #[serde(default, skip_serializing_if = "is_empty")]
+    pub addons_dir: String,
 }
 
 impl Default for Profile {
@@ -85,6 +88,7 @@ impl Default for Profile {
             odoo_bin: String::new(),
             python: String::new(),
             odoo_conf: String::new(),
+            addons_dir: String::new(),
         }
     }
 }
@@ -113,7 +117,6 @@ impl Profile {
                 .unwrap_or_default(),
         }
     }
-
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -123,6 +126,9 @@ pub struct Config {
     pub theme: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_profile: Option<String>,
+    /// Íconos de Nerd Font (por defecto sí); `false` para terminales sin ella.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icons: Option<bool>,
     #[serde(default, rename = "profile")]
     pub profiles: Vec<Profile>,
 }
@@ -171,6 +177,7 @@ mod tests {
         let cfg = Config {
             theme: Some("gruvbox".into()),
             default_profile: Some("dev".into()),
+            icons: Some(false),
             profiles: vec![
                 Profile {
                     name: "dev".into(),

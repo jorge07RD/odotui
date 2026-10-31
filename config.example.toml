@@ -2,6 +2,8 @@
 
 # Tema: omarchy (sigue el del sistema), tokyonight, catppuccin, gruvbox.
 # theme = "omarchy"
+# Íconos de Nerd Font; pon false si tu terminal no usa una.
+# icons = true
 default_profile = "docker-17"
 
 # Odoo y Postgres en docker compose.
@@ -17,6 +19,7 @@ odoo_container = "odoo17-web-1"
 odoo_url = "http://localhost:8069"
 backups_dir = "/home/usuario/backups"       # carpetas <nombre>/dump.sql (+ filestore/) en el host
 filestore_dir = "/var/lib/odoo/filestore"   # dentro del contenedor de Odoo
+addons_dir = "/mnt/extra-addons"            # addons propios, ruta en el contenedor
 
 # Odoo desde el código fuente y Postgres del sistema.
 [[profile]]
@@ -32,3 +35,4 @@ odoo_conf = "/home/usuario/odoo17/odoo.conf"
 odoo_url = "http://localhost:8069"
 backups_dir = "/home/usuario/backups"
 filestore_dir = "/home/usuario/.local/share/Odoo/filestore"
+addons_dir = "/home/usuario/odoo17/custom_addons"

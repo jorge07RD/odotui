@@ -40,7 +40,9 @@ impl Field {
 pub enum Target {
     /// `None` = perfil nuevo; `Some(i)` = editar ese.
     Profile(Option<usize>),
-    Restore { backup: String },
+    Restore {
+        backup: String,
+    },
     Duplicate(String),
     Rename(String),
     Neutralize(String),
@@ -99,6 +101,7 @@ impl Form {
             ("odoo_bin", p.odoo_bin.clone()),
             ("python", p.python.clone()),
             ("odoo_conf", p.odoo_conf.clone()),
+            ("addons_dir", p.addons_dir.clone()),
         ]);
         let title = match index {
             Some(_) => format!("Editar perfil {}", p.name),
@@ -126,7 +129,11 @@ impl Form {
 
     pub fn duplicate(db: &str) -> Self {
         let stash = HashMap::from([("name", format!("{db}_copia"))]);
-        Self::new(format!("Duplicar {db}"), Target::Duplicate(db.into()), stash)
+        Self::new(
+            format!("Duplicar {db}"),
+            Target::Duplicate(db.into()),
+            stash,
+        )
     }
 
     pub fn rename(db: &str) -> Self {
@@ -136,7 +143,11 @@ impl Form {
 
     pub fn neutralize(db: &str) -> Self {
         let stash = HashMap::from([("admin_password", "admin".to_string())]);
-        Self::new(format!("Neutralizar {db}"), Target::Neutralize(db.into()), stash)
+        Self::new(
+            format!("Neutralizar {db}"),
+            Target::Neutralize(db.into()),
+            stash,
+        )
     }
 
     /// Reconstruye los campos según el destino (y el modo, en perfiles).
@@ -158,7 +169,12 @@ impl Form {
                 specs.push(("pg_user", "Usuario", "", Text));
                 specs.push(("pg_password", "Contraseña", "", Password));
                 if docker {
-                    specs.push(("pg_container", "Contenedor Postgres", "psql corre dentro", Text));
+                    specs.push((
+                        "pg_container",
+                        "Contenedor Postgres",
+                        "psql corre dentro",
+                        Text,
+                    ));
                     specs.push(("odoo_container", "Contenedor Odoo", "", Text));
                 } else {
                     specs.push(("odoo_bin", "odoo-bin", "ruta", Text));
@@ -166,6 +182,16 @@ impl Form {
                     specs.push(("odoo_conf", "odoo.conf", "opcional", Text));
                 }
                 specs.push(("odoo_url", "URL de Odoo", "http://localhost:8069", Text));
+                specs.push((
+                    "addons_dir",
+                    "Addons propios",
+                    if docker {
+                        "ruta en el contenedor"
+                    } else {
+                        "ruta"
+                    },
+                    Text,
+                ));
                 specs.push(("backups_dir", "Carpeta de backups", "en este equipo", Text));
                 specs.push((
                     "filestore_dir",
@@ -180,8 +206,18 @@ impl Form {
             }
             Target::Restore { .. } => {
                 specs.push(("db", "BD destino", "letras, números, _ - .", Text));
-                specs.push(("overwrite", "Sobrescribir si existe", "la borra antes", Check));
-                specs.push(("filestore", "Copiar filestore", "si el backup lo trae", Check));
+                specs.push((
+                    "overwrite",
+                    "Sobrescribir si existe",
+                    "la borra antes",
+                    Check,
+                ));
+                specs.push((
+                    "filestore",
+                    "Copiar filestore",
+                    "si el backup lo trae",
+                    Check,
+                ));
                 specs.push(("neutralize", "Neutralizar", "crons, correo, pagos", Check));
                 specs.push((
                     "admin_password",
@@ -194,7 +230,12 @@ impl Form {
                 specs.push(("name", "Nuevo nombre", "letras, números, _ - .", Text));
             }
             Target::Neutralize(_) => {
-                specs.push(("admin_password", "Password de admin", "vacío = no cambiar", Text));
+                specs.push((
+                    "admin_password",
+                    "Password de admin",
+                    "vacío = no cambiar",
+                    Text,
+                ));
             }
         }
 
@@ -388,6 +429,7 @@ impl Form {
             odoo_bin: pick("odoo_bin"),
             python: pick("python"),
             odoo_conf: pick("odoo_conf"),
+            addons_dir: pick("addons_dir"),
         })
     }
 }

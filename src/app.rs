@@ -10,21 +10,26 @@ use std::{
 
 use ratatui::{
     crossterm::event::{
-        Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
-        MouseEvent, MouseEventKind,
+        Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+        MouseEventKind,
     },
     layout::{Position, Rect},
 };
-use tokio::sync::mpsc::UnboundedSender;
+use serde_json::Value;
+use tokio::sync::{mpsc::UnboundedSender, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    ai::{
+        headless::{first_line, resolve},
+        tools,
+    },
     config::{Config, Profile},
     exec::{self, Spec, Stop},
     form::{self, Form, Target},
     history::{self, Entry},
     input::{Action, Cmd, HitMap, Pane, Tab},
-    jobs::{Ev, Sink, Tx},
+    jobs::{AiRequest, Ev, Sink, Tx},
     log::{ListState, LogView},
     odoo::{
         filestore, instance, modules,
@@ -34,6 +39,7 @@ use crate::{
         restore::{self, Backup, Request},
     },
     theme::{self, Theme},
+    ui::widgets::{Glyphs, NERD, PLAIN},
 };
 
 pub struct Confirm {
@@ -57,6 +63,8 @@ pub struct Busy {
     pub started: Instant,
     /// (backup, bd) de una restauración, para el historial.
     restore: Option<(String, String)>,
+    /// Si lo pidió una IA, a quién avisar al terminar.
+    reply: Option<oneshot::Sender<Result<String, String>>>,
 }
 
 #[derive(Default)]
@@ -73,6 +81,7 @@ pub struct App {
     /// Sube al cambiar de perfil: las respuestas de antes se descartan.
     generation: u64,
     pub theme: Theme,
+    pub glyphs: &'static Glyphs,
     theme_stamp: Option<SystemTime>,
     pub tab: Tab,
     pub focus: Pane,
@@ -110,8 +119,8 @@ pub struct App {
     pub inst_status: String,
     pub inst_log: LogView,
     logs_job: Option<CancellationToken>,
-    pub server: Option<CancellationToken>,
-    restart_server: bool,
+    /// Número del seguimiento de log en curso (los avisos de uno viejo se ignoran).
+    logs_seq: u64,
     pub dev: bool,
 
     pub mod_db: Option<String>,
@@ -124,6 +133,10 @@ pub struct App {
 
     pub prof_list: ListState,
     pub prof_log: LogView,
+    /// Último pedido de una IA (para el indicador de la cabecera).
+    pub ai_seen: Option<Instant>,
+    /// La TUI atiende a la IA por el socket.
+    pub ai_listening: bool,
     pub history: Vec<Entry>,
 }
 
@@ -133,6 +146,11 @@ impl App {
         let profile = cfg.default_index();
         Self {
             theme,
+            glyphs: if cfg.icons.unwrap_or(true) {
+                &NERD
+            } else {
+                &PLAIN
+            },
             theme_stamp: theme::omarchy_stamp(),
             profile,
             cfg,
@@ -169,8 +187,7 @@ impl App {
             inst_status: "—".into(),
             inst_log: LogView::default(),
             logs_job: None,
-            server: None,
-            restart_server: false,
+            logs_seq: 0,
             dev: true,
             mod_db: None,
             modules: vec![],
@@ -184,6 +201,8 @@ impl App {
                 ..Default::default()
             },
             prof_log: LogView::default(),
+            ai_seen: None,
+            ai_listening: false,
             history: history::load(),
         }
     }
@@ -302,9 +321,7 @@ impl App {
     }
 
     pub fn selected_db(&self) -> Option<&DbInfo> {
-        self.db_rows()
-            .get(self.db_list.sel)
-            .map(|&i| &self.dbs[i])
+        self.db_rows().get(self.db_list.sel).map(|&i| &self.dbs[i])
     }
 
     pub fn selected_backup(&self) -> Option<&Backup> {
@@ -370,33 +387,32 @@ impl App {
         let Some(p) = self.current().cloned() else {
             return;
         };
-        if !p.is_docker() {
-            self.inst_status = if self.server.is_some() {
-                "running".into()
-            } else {
-                "detenido".into()
-            };
-            return;
-        }
         let (tx, g) = (self.tx.clone(), self.generation);
         tokio::spawn(async move {
-            let s = instance::docker_status(&p).await;
+            let s = instance::status(&p).await;
             let _ = tx.send(Ev::Status(g, s));
         });
     }
 
+    /// Sigue el log de Odoo (docker logs -f o tail -F del log local).
     fn start_logs(&mut self) {
         let Some(p) = self.current().cloned() else {
             return;
         };
-        if !p.is_docker() || self.logs_job.is_some() || p.odoo_container.is_empty() {
+        if self.logs_job.is_some() || p.is_docker() && p.odoo_container.is_empty() {
             return;
         }
-        let Ok(spec) = instance::logs(&p) else { return };
+        if !p.is_docker() && !instance::log_path(&p).exists() {
+            return;
+        }
+        let Ok(spec) = instance::follow(&p) else {
+            return;
+        };
         let cancel = CancellationToken::new();
         self.logs_job = Some(cancel.clone());
+        self.logs_seq += 1;
         let tx = self.tx(Sink::Instance);
-        let g = self.generation;
+        let g = self.logs_seq;
         tokio::spawn(async move {
             if let Err(e) = exec::stream(&spec, None, &tx, &cancel, Stop::Kill).await
                 && !cancel.is_cancelled()
@@ -433,6 +449,7 @@ impl App {
             cancel,
             started: Instant::now(),
             restore: None,
+            reply: None,
         });
         tokio::spawn(async move {
             let r = fut.await.map_err(|e| format!("{e:#}"));
@@ -457,8 +474,10 @@ impl App {
                         self.dbs = dbs;
                         self.dbs_err = None;
                         if let Some(name) = keep
-                            && let Some(pos) =
-                                self.db_rows().iter().position(|&i| self.dbs[i].name == name)
+                            && let Some(pos) = self
+                                .db_rows()
+                                .iter()
+                                .position(|&i| self.dbs[i].name == name)
                         {
                             self.db_list.sel = pos;
                         }
@@ -492,7 +511,9 @@ impl App {
                     self.backups_err = Some(e);
                 }
             },
-            Ev::Modules(g, db, r) if g == self.generation && self.mod_db.as_deref() == Some(&db) => {
+            Ev::Modules(g, db, r)
+                if g == self.generation && self.mod_db.as_deref() == Some(&db) =>
+            {
                 self.mods_loading = false;
                 match r {
                     Ok(m) => {
@@ -508,31 +529,25 @@ impl App {
                 }
             }
             Ev::Status(g, s) if g == self.generation => self.inst_status = s,
-            Ev::LogsEnded(g) if g == self.generation => self.logs_job = None,
-            Ev::ServerEnded(r) => {
-                self.server = None;
-                match r {
-                    Ok(m) | Err(m) => self.inst_log.push(format!("■ odoo-bin: {m}")),
-                }
-                self.refresh_status();
-                if std::mem::take(&mut self.restart_server) {
-                    self.start_server();
-                }
-            }
+            Ev::LogsEnded(seq) if seq == self.logs_seq => self.logs_job = None,
+            Ev::Ai(req) => self.on_ai(req),
             _ => {}
         }
     }
 
     fn on_done(&mut self, sink: Sink, r: Result<String, String>) {
-        let busy = self.busy.take();
-        let line = match &r {
-            Ok(m) => format!("✓ {m}"),
-            Err(e) => format!("✗ {e}"),
-        };
-        self.log_mut(sink).push(line);
-        match &r {
-            Ok(m) => self.toast(format!("✓ {m}")),
-            Err(e) => self.toast(format!("✗ {e}")),
+        let mut busy = self.busy.take();
+        let reply = busy.as_mut().and_then(|b| b.reply.take());
+        let from_ai = reply.is_some();
+        // El resultado de una IA trae además un resumen del log: aquí basta
+        // la primera línea, el log ya está en pantalla.
+        let first = first_line(&r);
+        let mark = if r.is_ok() { "✓" } else { "✗" };
+        let ai = if from_ai { "IA: " } else { "" };
+        self.log_mut(sink).push(format!("{mark} {ai}{first}"));
+        self.toast(format!("{mark} {ai}{first}"));
+        if let Some(tx) = reply {
+            let _ = tx.send(r.clone());
         }
         match sink {
             Sink::Restore => {
@@ -549,9 +564,7 @@ impl App {
                             backup,
                             db,
                             ok: r.is_ok(),
-                            message: match &r {
-                                Ok(m) | Err(m) => m.clone(),
-                            },
+                            message: format!("{ai}{first}"),
                         },
                     );
                 }
@@ -560,16 +573,23 @@ impl App {
             Sink::Dbs => self.refresh_dbs(),
             Sink::Modules => {
                 self.refresh_modules();
-                if r.is_ok() && (self.server.is_some() || self.inst_status == "running") {
+                // Una IA decide sola si reinicia; al usuario se le pregunta.
+                if r.is_ok() && !from_ai && self.inst_status == "running" {
                     self.confirm = Some(Confirm {
-                        message: "Módulos listos. ¿Reiniciar la instancia para cargar el código nuevo?"
-                            .into(),
+                        message:
+                            "Módulos listos. ¿Reiniciar la instancia para cargar el código nuevo?"
+                                .into(),
                         then: Pending::RestartInstance,
                     });
                 }
             }
             Sink::Instance => {
                 self.refresh_status();
+                // `docker logs -f` termina al parar el contenedor: hay que
+                // volver a engancharse. En local `tail -F` sigue solo.
+                if self.current().is_some_and(Profile::is_docker) {
+                    self.stop_logs();
+                }
                 self.start_logs();
             }
             Sink::Profiles => {}
@@ -605,9 +625,6 @@ impl App {
         }
         if self.busy.is_some() {
             return self.toast("espera a que termine la tarea en curso");
-        }
-        if self.server.is_some() {
-            return self.toast("detén la instancia antes de cambiar de perfil");
         }
         self.stop_logs();
         self.profile = i;
@@ -703,14 +720,9 @@ impl App {
     }
 
     fn request_quit(&mut self) {
-        if self.busy.is_some() || self.server.is_some() {
-            let what = if self.busy.is_some() {
-                "Hay una tarea en curso; salir la cancela."
-            } else {
-                "Odoo (odoo-bin) está corriendo; salir lo detiene."
-            };
+        if self.busy.is_some() {
             self.confirm = Some(Confirm {
-                message: format!("{what} ¿Salir?"),
+                message: "Hay una tarea en curso; salir la cancela. ¿Salir?".into(),
                 then: Pending::Quit,
             });
         } else {
@@ -851,14 +863,14 @@ impl App {
             Cmd::Restore => self.open_restore(),
             Cmd::InstStart | Cmd::InstStop | Cmd::InstRestart => self.instance_cmd(c, &p),
             Cmd::InstLogs => {
-                if !p.is_docker() {
-                    return self.toast("en modo local los logs salen de odoo-bin al iniciarlo");
-                }
                 if self.logs_job.is_some() {
                     self.stop_logs();
                     self.toast("logs pausados");
                 } else {
                     self.start_logs();
+                    if self.logs_job.is_none() {
+                        self.toast("todavía no hay log: inicia Odoo");
+                    }
                 }
             }
             Cmd::InstDev => {
@@ -913,7 +925,11 @@ impl App {
                 let install = c == Cmd::ModInstall;
                 self.mod_log.clear();
                 self.focus = Pane::ModLog;
-                let verb = if install { "instalando" } else { "actualizando" };
+                let verb = if install {
+                    "instalando"
+                } else {
+                    "actualizando"
+                };
                 self.spawn_busy(Sink::Modules, format!("{verb} {}", names.join(",")), {
                     move |tx, cancel| async move {
                         modules::run(&p, &db, install, &names, &tx, &cancel).await
@@ -972,59 +988,15 @@ impl App {
     }
 
     fn instance_cmd(&mut self, c: Cmd, p: &Profile) {
-        if p.is_docker() {
-            let verb = match c {
-                Cmd::InstStart => "start",
-                Cmd::InstStop => "stop",
-                _ => "restart",
-            };
-            let p = p.clone();
-            self.inst_log.push(format!("▶ docker {verb} {}", p.odoo_container));
-            self.spawn_busy(Sink::Instance, format!("docker {verb}"), {
-                move |_, _| async move {
-                    instance::docker(&p, verb).await?;
-                    Ok(format!("docker {verb} {}", p.odoo_container))
-                }
-            });
-            return;
-        }
-        match c {
-            Cmd::InstStart => self.start_server(),
-            Cmd::InstStop => match &self.server {
-                Some(s) => s.cancel(),
-                None => self.toast("Odoo no está corriendo"),
-            },
-            _ => match &self.server {
-                Some(s) => {
-                    self.restart_server = true;
-                    s.cancel();
-                }
-                None => self.start_server(),
-            },
-        }
-    }
-
-    fn start_server(&mut self) {
-        let Some(p) = self.current().cloned() else {
-            return;
+        let verb = match c {
+            Cmd::InstStart => "start",
+            Cmd::InstStop => "stop",
+            _ => "restart",
         };
-        if self.server.is_some() {
-            return self.toast("Odoo ya está corriendo");
-        }
-        let spec = match instance::server(&p, None, self.dev) {
-            Ok(s) => s,
-            Err(e) => return self.toast(format!("✗ {e}")),
-        };
-        let cancel = CancellationToken::new();
-        self.server = Some(cancel.clone());
-        self.inst_status = "running".into();
-        let tx = self.tx(Sink::Instance);
-        tokio::spawn(async move {
-            let r = exec::stream(&spec, None, &tx, &cancel, Stop::Interrupt)
-                .await
-                .map(|_| "terminó".to_string())
-                .map_err(|e| format!("{e:#}"));
-            tx.send(Ev::ServerEnded(r));
+        let (p, dev) = (p.clone(), self.dev);
+        self.inst_log.push(format!("▶ {verb}"));
+        self.spawn_busy(Sink::Instance, format!("odoo {verb}"), {
+            move |tx, _| async move { instance::action(&p, verb, dev, &tx).await }
         });
     }
 
@@ -1111,7 +1083,9 @@ impl App {
                 let overwrite = form.checked("overwrite");
                 let exists = self.dbs.iter().any(|d| d.name == db);
                 if exists && !overwrite {
-                    return Err(format!("«{db}» ya existe: marca «Sobrescribir» u otro nombre"));
+                    return Err(format!(
+                        "«{db}» ya existe: marca «Sobrescribir» u otro nombre"
+                    ));
                 }
                 let req = Request {
                     profile: p,
@@ -1230,7 +1204,7 @@ impl App {
                 if i >= self.cfg.profiles.len() {
                     return;
                 }
-                if i == self.profile && (self.busy.is_some() || self.server.is_some()) {
+                if i == self.profile && self.busy.is_some() {
                     return self.toast("el perfil está en uso");
                 }
                 let gone = self.cfg.profiles.remove(i);
@@ -1258,10 +1232,199 @@ impl App {
                 if let Some(b) = &self.busy {
                     b.cancel.cancel();
                 }
-                if let Some(s) = &self.server {
-                    s.cancel();
-                }
                 self.quit = true;
+            }
+        }
+    }
+
+    // ── IA (MCP) ─────────────────────────────────────────────────────────
+
+    /// ¿Hay una IA trabajando (o lo hizo hace poco)?
+    pub fn ai_active(&self) -> bool {
+        self.busy.as_ref().is_some_and(|b| b.reply.is_some())
+            || self.ai_seen.is_some_and(|t| t.elapsed().as_secs() < 8)
+    }
+
+    /// Un pedido de una IA: se ejecuta aquí para que el usuario lo vea en vivo.
+    fn on_ai(&mut self, req: AiRequest) {
+        self.ai_seen = Some(Instant::now());
+        let AiRequest { tool, args, reply } = req;
+        let answer = |reply: oneshot::Sender<Result<String, String>>, r: Result<String, String>| {
+            let _ = reply.send(r);
+        };
+
+        // Un perfil distinto en los argumentos cambia el de la TUI.
+        if tool != "switch_profile"
+            && let Some(name) = tools::opt_str(&args, "profile").filter(|s| !s.is_empty())
+        {
+            match self.cfg.profiles.iter().position(|p| p.name == name) {
+                None => return answer(reply, Err(format!("no existe el perfil «{name}»"))),
+                Some(i) if i != self.profile => {
+                    if let Some(b) = &self.busy {
+                        let msg =
+                            format!("ocupado: {} en curso; no puedo cambiar de perfil", b.label);
+                        return answer(reply, Err(msg));
+                    }
+                    self.switch_profile(i);
+                }
+                _ => {}
+            }
+        }
+
+        match tool.as_str() {
+            "status" => {
+                let profiles = self.cfg.profiles.clone();
+                let current = (!profiles.is_empty()).then_some(self.profile);
+                let busy = self.busy.as_ref().map(|b| b.label.clone());
+                tokio::spawn(async move {
+                    let text = tools::describe(&profiles, current, busy.as_deref(), true).await;
+                    let _ = reply.send(Ok(text));
+                });
+            }
+            "switch_profile" => {
+                let r = resolve(&self.cfg.profiles, Some(self.profile), &args).and_then(|i| {
+                    if i != self.profile && self.busy.is_some() {
+                        return Err("hay una tarea en curso".to_string());
+                    }
+                    self.switch_profile(i);
+                    Ok(format!("perfil activo: {}", self.cfg.profiles[i].name))
+                });
+                answer(reply, r);
+            }
+            "show" => {
+                let tab = match tools::opt_str(&args, "tab").as_deref() {
+                    Some("dbs") => Tab::Dbs,
+                    Some("restore") => Tab::Restore,
+                    Some("instance") => Tab::Instance,
+                    Some("modules") => Tab::Modules,
+                    Some("profiles") => Tab::Profiles,
+                    other => return answer(reply, Err(format!("pestaña desconocida: {other:?}"))),
+                };
+                self.set_tab(tab);
+                answer(reply, Ok(format!("mostrando {}", tab.title())));
+            }
+            "cancel" => {
+                let r = match &self.busy {
+                    Some(b) => {
+                        b.cancel.cancel();
+                        Ok(format!("cancelando: {}", b.label))
+                    }
+                    None => Ok("no hay nada en curso".into()),
+                };
+                answer(reply, r);
+            }
+            _ => {
+                let Some(p) = self.current().cloned() else {
+                    return answer(
+                        reply,
+                        Err("no hay perfiles: créalo en la pestaña Perfiles".into()),
+                    );
+                };
+                let Some(sink) = tools::sink(&tool) else {
+                    self.follow_ai_read(&tool, &args);
+                    tokio::spawn(async move {
+                        let r = tools::call(
+                            &tool,
+                            &args,
+                            &p,
+                            &Tx::detached(),
+                            &CancellationToken::new(),
+                        )
+                        .await;
+                        let _ = reply.send(r);
+                    });
+                    return;
+                };
+                if let Some(b) = &self.busy {
+                    let msg = format!("ocupado: {} en curso (usa cancel o espera)", b.label);
+                    return answer(reply, Err(msg));
+                }
+                self.start_ai_job(sink, tool, args, p, reply);
+            }
+        }
+    }
+
+    /// Lleva la vista a lo que la IA está leyendo, si no hay nada en curso.
+    fn follow_ai_read(&mut self, tool: &str, args: &Value) {
+        if self.busy.is_some() {
+            return;
+        }
+        match tool {
+            "list_databases" => {
+                self.set_tab(Tab::Dbs);
+                self.refresh_dbs();
+            }
+            "list_backups" => {
+                self.set_tab(Tab::Restore);
+                self.refresh_backups();
+            }
+            "list_modules" => {
+                if let Some(db) = tools::opt_str(args, "database") {
+                    self.select_module_db(db);
+                }
+                self.set_tab(Tab::Modules);
+            }
+            "read_logs" => self.set_tab(Tab::Instance),
+            _ => {}
+        }
+    }
+
+    fn select_module_db(&mut self, db: String) {
+        if self.mod_db.as_deref() != Some(&db) {
+            self.mod_db = Some(db);
+            self.modules.clear();
+            self.marks.clear();
+            self.mod_list = ListState::default();
+        }
+        self.refresh_modules();
+    }
+
+    fn start_ai_job(
+        &mut self,
+        sink: Sink,
+        tool: String,
+        args: Value,
+        p: Profile,
+        reply: oneshot::Sender<Result<String, String>>,
+    ) {
+        let tab = match sink {
+            Sink::Dbs => Tab::Dbs,
+            Sink::Restore => Tab::Restore,
+            Sink::Instance => Tab::Instance,
+            Sink::Modules => Tab::Modules,
+            Sink::Profiles => Tab::Profiles,
+        };
+        self.set_tab(tab);
+        if let Some(log) = tab.panes().iter().copied().find(|p| p.is_log()) {
+            self.focus = log;
+        }
+        if sink != Sink::Instance {
+            self.log_mut(sink).clear();
+        }
+        if sink == Sink::Modules
+            && let Some(db) = tools::opt_str(&args, "database")
+        {
+            self.select_module_db(db);
+        }
+        self.log_mut(sink)
+            .push(format!("▶ IA: {tool} {}", brief(&args)));
+        let restore = (tool == "restore_backup").then(|| {
+            (
+                tools::opt_str(&args, "backup").unwrap_or_default(),
+                tools::opt_str(&args, "database").unwrap_or_default(),
+            )
+        });
+        let label = format!("IA: {tool}");
+        let started = self.spawn_busy(sink, label, move |tx, cancel| async move {
+            tools::call(&tool, &args, &p, &tx, &cancel)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))
+        });
+        if started && let Some(b) = &mut self.busy {
+            b.reply = Some(reply);
+            if restore.is_some() {
+                self.progress = Some(0.0);
+                b.restore = restore;
             }
         }
     }
@@ -1279,7 +1442,10 @@ impl App {
             ("BDs: renombrar la seleccionada", Cmd::DbRename),
             ("BDs: neutralizar la seleccionada", Cmd::DbNeutralize),
             ("BDs: borrar la seleccionada", Cmd::DbDrop),
-            ("BDs: restaurar un backup sobre la seleccionada", Cmd::DbRestoreHere),
+            (
+                "BDs: restaurar un backup sobre la seleccionada",
+                Cmd::DbRestoreHere,
+            ),
             ("Restaurar: backup seleccionado…", Cmd::Restore),
             ("Cancelar la tarea en curso", Cmd::Cancel),
             ("Instancia: iniciar", Cmd::InstStart),
@@ -1306,11 +1472,11 @@ impl App {
         all.push(("Ayuda".into(), Action::Help));
         all.push(("Salir".into(), Action::Quit));
         let Some(pal) = &self.palette else { return all };
-        let q = pal.query.to_lowercase();
+        let q = crate::log::fold(&pal.query);
         let words: Vec<&str> = q.split_whitespace().collect();
         all.into_iter()
             .filter(|(l, _)| {
-                let l = l.to_lowercase();
+                let l = crate::log::fold(l);
                 words.iter().all(|w| l.contains(w))
             })
             .collect()
@@ -1412,7 +1578,9 @@ impl App {
             KeyCode::Char('?') => Some(Action::Help),
             KeyCode::Char(':') => Some(Action::Palette),
             KeyCode::Char('p') => Some(Action::NextProfile),
-            KeyCode::Tab => Some(Action::Tab(Tab::ALL[(self.tab.index() + 1) % Tab::ALL.len()])),
+            KeyCode::Tab => Some(Action::Tab(
+                Tab::ALL[(self.tab.index() + 1) % Tab::ALL.len()],
+            )),
             KeyCode::BackTab => Some(Action::Tab(
                 Tab::ALL[(self.tab.index() + Tab::ALL.len() - 1) % Tab::ALL.len()],
             )),
@@ -1620,13 +1788,31 @@ impl App {
         if self.ticks.is_multiple_of(20) && self.tab == Tab::Instance {
             self.refresh_status();
         }
-        if self.ticks.is_multiple_of(4) && self.cfg.theme.as_deref().is_none_or(|t| t == "omarchy") {
+        if self.ticks.is_multiple_of(4) && self.cfg.theme.as_deref().is_none_or(|t| t == "omarchy")
+        {
             let stamp = theme::omarchy_stamp();
             if stamp != self.theme_stamp {
                 self.theme_stamp = stamp;
                 self.theme = Theme::by_name(self.cfg.theme.as_deref());
             }
         }
+    }
+}
+
+/// Argumentos de una IA en una línea, para el log (el código va aparte).
+fn brief(args: &Value) -> String {
+    let mut a = args.clone();
+    if let Some(o) = a.as_object_mut()
+        && let Some(code) = o.get("code").and_then(Value::as_str)
+    {
+        let n = code.lines().count();
+        o.insert("code".into(), Value::String(format!("<{n} línea(s)>")));
+    }
+    let s = a.to_string();
+    if s.chars().count() > 160 {
+        format!("{}…", s.chars().take(160).collect::<String>())
+    } else {
+        s
     }
 }
 
@@ -1642,7 +1828,10 @@ pub fn sanitize(s: &str) -> String {
             }
         })
         .collect();
-    out.trim_start_matches(['-', '.']).chars().take(63).collect()
+    out.trim_start_matches(['-', '.'])
+        .chars()
+        .take(63)
+        .collect()
 }
 
 async fn test_profile(p: &Profile, tx: &Tx) -> anyhow::Result<String> {
@@ -1659,8 +1848,13 @@ async fn test_profile(p: &Profile, tx: &Tx) -> anyhow::Result<String> {
             if c.is_empty() {
                 continue;
             }
-            match exec::capture(&Spec::new("docker").args(["inspect", "-f", "{{.State.Status}}", c]))
-                .await
+            match exec::capture(&Spec::new("docker").args([
+                "inspect",
+                "-f",
+                "{{.State.Status}}",
+                c,
+            ]))
+            .await
             {
                 Ok(s) => tx.log(format!("✓ contenedor {c}: {}", s.trim())),
                 Err(e) => {

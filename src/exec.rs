@@ -28,7 +28,17 @@ pub struct Spec {
     pub args: Vec<String>,
     envs: Vec<(String, String)>,
     container: Option<String>,
-    root: bool,
+    /// Usuario dentro del contenedor (`root`, `1000:1000`…).
+    user: Option<String>,
+}
+
+/// Lo que se manda por stdin.
+#[derive(Debug, Clone)]
+pub enum Input {
+    /// Un archivo, con progreso (p. ej. `dump.sql`).
+    File(PathBuf),
+    /// Texto corto (p. ej. código para `odoo shell`).
+    Bytes(Vec<u8>),
 }
 
 impl Spec {
@@ -68,9 +78,25 @@ impl Spec {
         self
     }
 
-    pub fn root(mut self) -> Self {
-        self.root = true;
+    pub fn root(self) -> Self {
+        self.user("root")
+    }
+
+    pub fn user(mut self, user: &str) -> Self {
+        self.user = Some(user.into());
         self
+    }
+
+    /// Comando de esta máquina que no muere con odotui (Odoo en segundo plano).
+    pub fn detached(&self) -> std::process::Command {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = std::process::Command::new(&self.program);
+        cmd.args(&self.args)
+            .envs(self.envs.iter().map(|(k, v)| (k, v)))
+            .stdin(Stdio::null())
+            // Grupo propio: un Ctrl+C en la terminal de odotui no le llega.
+            .process_group(0);
+        cmd
     }
 
     pub fn command(&self, stdin: bool) -> Command {
@@ -81,8 +107,8 @@ impl Spec {
                 if stdin {
                     cmd.arg("-i");
                 }
-                if self.root {
-                    cmd.args(["-u", "root"]);
+                if let Some(u) = &self.user {
+                    cmd.args(["-u", u]);
                 }
                 for (k, _) in &self.envs {
                     cmd.args(["-e", k]);
@@ -188,11 +214,11 @@ pub enum Stop {
     Interrupt,
 }
 
-/// Ejecuta mandando stdout y stderr al log, opcionalmente con un archivo por
-/// stdin (con progreso real). Devuelve cuántas líneas parecían errores.
+/// Ejecuta mandando stdout y stderr al log, opcionalmente con algo por stdin
+/// (un archivo, con progreso real). Devuelve cuántas líneas parecían errores.
 pub async fn stream(
     spec: &Spec,
-    stdin: Option<PathBuf>,
+    stdin: Option<Input>,
     tx: &Tx,
     cancel: &CancellationToken,
     stop: Stop,
@@ -204,17 +230,24 @@ pub async fn stream(
         .map_err(|e| not_found(spec, e))?;
     let pid = child.id();
     let errors = Arc::new(AtomicUsize::new(0));
-    let out = child.stdout.take().map(|o| {
-        tokio::spawn(pump(o, tx.clone(), errors.clone()))
-    });
-    let err = child.stderr.take().map(|e| {
-        tokio::spawn(pump(e, tx.clone(), errors.clone()))
-    });
+    let out = child
+        .stdout
+        .take()
+        .map(|o| tokio::spawn(pump(o, tx.clone(), errors.clone())));
+    let err = child
+        .stderr
+        .take()
+        .map(|e| tokio::spawn(pump(e, tx.clone(), errors.clone())));
     let mut input = child.stdin.take();
 
     let finished = tokio::select! {
         r = async {
-            if let (Some(path), Some(mut w)) = (stdin, input.take()) {
+            match (stdin, input.take()) {
+                (Some(Input::Bytes(b)), Some(mut w)) => {
+                    // Si el proceso no lee todo, su salida dirá por qué.
+                    let _ = w.write_all(&b).await;
+                }
+                (Some(Input::File(path)), Some(mut w)) => {
                 let total = tokio::fs::metadata(&path).await?.len().max(1);
                 let mut file = tokio::fs::File::open(&path).await?;
                 let mut chunk = vec![0u8; 256 * 1024];
@@ -235,8 +268,10 @@ pub async fn stream(
                         tx.progress(sent as f64 / total as f64);
                     }
                 }
-                drop(w);
+                }
+                _ => {}
             }
+            // La entrada ya se cerró (al soltar `w`): el proceso ve EOF.
             anyhow::Ok(child.wait().await?)
         } => Some(r),
         _ = cancel.cancelled() => None,
@@ -270,10 +305,7 @@ pub async fn stream(
     Ok(errors.load(Ordering::Relaxed))
 }
 
-async fn drain(
-    out: Option<tokio::task::JoinHandle<()>>,
-    err: Option<tokio::task::JoinHandle<()>>,
-) {
+async fn drain(out: Option<tokio::task::JoinHandle<()>>, err: Option<tokio::task::JoinHandle<()>>) {
     for h in [out, err].into_iter().flatten() {
         let _ = tokio::time::timeout(Duration::from_secs(2), h).await;
     }
@@ -319,7 +351,7 @@ mod tests {
         std::fs::write(&file, "hola\nERROR: algo\n").unwrap();
         let n = stream(
             &Spec::new("cat"),
-            Some(file),
+            Some(Input::File(file)),
             &tx,
             &CancellationToken::new(),
             Stop::Kill,
@@ -348,7 +380,14 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
             c2.cancel();
         });
-        let r = stream(&Spec::new("sleep").arg("30"), None, &tx, &cancel, Stop::Interrupt).await;
+        let r = stream(
+            &Spec::new("sleep").arg("30"),
+            None,
+            &tx,
+            &cancel,
+            Stop::Interrupt,
+        )
+        .await;
         assert!(r.unwrap_err().to_string().contains("detenido"));
     }
 }

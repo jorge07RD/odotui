@@ -1,6 +1,7 @@
 //! odotui: herramientas de desarrollo para Odoo en la terminal, usables
 //! igual con el mouse que con el teclado.
 
+mod ai;
 mod app;
 mod config;
 mod exec;
@@ -17,7 +18,9 @@ use std::{io::stdout, path::PathBuf, time::Duration};
 
 use anyhow::Result;
 use ratatui::crossterm::{
-    event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
+    event::{
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    },
     execute,
 };
 use tokio::sync::mpsc;
@@ -27,8 +30,10 @@ use crate::{app::App, config::Config, input::HitMap};
 const USAGE: &str = "\
 odotui — herramientas de desarrollo para Odoo
 
-uso: odotui [-c config.toml] [--init]
+uso: odotui [mcp] [-c config.toml] [--init]
 
+  mcp                 servidor MCP por stdio para que una IA maneje odotui
+                      (si la TUI está abierta, lo hace en ella y se ve en vivo)
   -c, --config RUTA   config a usar (por defecto ~/.config/odotui/config.toml)
       --init          escribe una config de ejemplo y sale
   -h, --help          esta ayuda";
@@ -37,6 +42,7 @@ uso: odotui [-c config.toml] [--init]
 async fn main() -> Result<()> {
     let mut cfg_path = config::default_path();
     let mut init = false;
+    let mut mcp = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -45,6 +51,7 @@ async fn main() -> Result<()> {
                 None => anyhow::bail!("falta la ruta tras {a}"),
             },
             "--init" => init = true,
+            "mcp" => mcp = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -63,10 +70,20 @@ async fn main() -> Result<()> {
         println!("config de ejemplo en {}", cfg_path.display());
         return Ok(());
     }
+    if mcp {
+        // stdout es del protocolo: nada más puede escribir ahí.
+        return ai::mcp::serve(cfg_path).await;
+    }
     let cfg = Config::load(&cfg_path)?;
 
     let (job_tx, mut jobs) = mpsc::unbounded_channel();
+    // Mientras la TUI esté abierta, la IA trabaja a través de ella.
+    let bridge = ai::bridge::serve(job_tx.clone()).await;
     let mut app = App::new(cfg, cfg_path, job_tx);
+    match &bridge {
+        Ok(_) => app.ai_listening = true,
+        Err(e) => app.toast(format!("IA: {e}")),
+    }
 
     let mut terminal = ratatui::init();
     execute!(stdout(), EnableMouseCapture, EnableBracketedPaste)?;
@@ -122,5 +139,6 @@ async fn main() -> Result<()> {
 
     execute!(stdout(), DisableMouseCapture, DisableBracketedPaste)?;
     ratatui::restore();
+    drop(bridge);
     result
 }

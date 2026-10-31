@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     config::Profile,
-    exec::{self, Stop},
+    exec::{self, Input, Stop},
     jobs::Tx,
     odoo::{filestore, neutralize, pg},
 };
@@ -93,7 +93,10 @@ pub async fn run(req: Request, tx: &Tx, cancel: &CancellationToken) -> Result<St
     // Cada paso empieza comprobando si se canceló mientras corría el anterior.
     let mut next = |msg: &str| -> Result<()> {
         if cancel.is_cancelled() {
-            bail!("cancelado antes de «{msg}»: la BD «{}» quedó a medias", req.db);
+            bail!(
+                "cancelado antes de «{msg}»: la BD «{}» quedó a medias",
+                req.db
+            );
         }
         step += 1;
         tx.log(format!("▶ {step}/{steps} {msg}"));
@@ -119,7 +122,7 @@ pub async fn run(req: Request, tx: &Tx, cancel: &CancellationToken) -> Result<St
         // Los resultados (p. ej. los `setval`) no interesan; errores y avisos
         // siguen saliendo por stderr.
         &pg::psql(p, &req.db).args(["-q", "-o", "/dev/null"]),
-        Some(dump),
+        Some(Input::File(dump)),
         tx,
         cancel,
         Stop::Kill,
@@ -134,7 +137,9 @@ pub async fn run(req: Request, tx: &Tx, cancel: &CancellationToken) -> Result<St
     })?;
     tx.progress(1.0);
     if errors > 0 {
-        tx.log(format!("⚠ psql reportó {errors} error(es); revisa el log (filtra con /)"));
+        tx.log(format!(
+            "⚠ psql reportó {errors} error(es); revisa el log (filtra con /)"
+        ));
     }
 
     if req.filestore {

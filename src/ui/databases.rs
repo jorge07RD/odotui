@@ -1,10 +1,12 @@
-//! Pestaña BDs: lista de bases con tamaño y versión de Odoo, y acciones.
+//! Pestaña BDs: lista de bases con tamaño y versión de Odoo, detalle de la
+//! seleccionada y acciones.
 
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
+    widgets::Paragraph,
 };
 
 use super::widgets::{self, Btn, cell, rcell};
@@ -17,8 +19,8 @@ use crate::{
 pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     let t = &app.theme;
     let log_h = if app.db_log.is_empty() { 0 } else { 9 };
-    let [bar, list_area, log_area] = Layout::vertical([
-        Constraint::Length(1),
+    let [bar, main, log_area] = Layout::vertical([
+        Constraint::Length(2),
         Constraint::Fill(1),
         Constraint::Length(log_h),
     ])
@@ -28,7 +30,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     let has = app.selected_db().is_some();
     widgets::toolbar(
         f,
-        bar,
+        Rect { height: 1, ..bar },
         app,
         &[
             Btn::new("r", "Refrescar", Action::Cmd(Cmd::Refresh)),
@@ -45,33 +47,54 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
         hits,
     );
 
+    // Con espacio, el detalle de la BD seleccionada a la derecha.
+    let wide = main.width >= 110;
+    let [list_area, detail_area] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(if wide { 38 } else { 0 }),
+    ])
+    .areas(main);
+
     let rows = app.db_rows();
-    let title = if app.dbs_loading {
-        format!(" {} Bases de datos ", super::spinner(app))
+    let badge = if app.dbs_loading {
+        super::spinner(app).to_string()
     } else {
-        format!(" Bases de datos ({}) ", rows.len())
+        rows.len().to_string()
     };
-    let inner = widgets::frame(f, list_area, app, Pane::DbList, Line::raw(title), hits);
+    let inner = widgets::frame(
+        f,
+        list_area,
+        app,
+        Pane::DbList,
+        app.glyphs.db,
+        "Bases de datos",
+        Some(badge),
+        hits,
+    );
     let inner = widgets::filter_bar(f, inner, app, Pane::DbList, hits);
-    let [head, body] =
-        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
-    let name_w = (inner.width as usize).saturating_sub(40).clamp(12, 48);
-    f.render_widget(
-        Line::styled(
-            format!(
-                " {}  {} {} {}",
-                cell("nombre", name_w),
-                cell("odoo", 12),
-                rcell("tamaño", 10),
-                cell(" dueño", 12)
-            ),
-            Style::new().fg(t.dim).bold(),
-        ),
+    let [head, body] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
+    let name_w = (inner.width as usize).saturating_sub(42).clamp(12, 48);
+    widgets::header(
+        f,
         head,
+        app,
+        format!(
+            "  {}  {} {}   {}",
+            cell("NOMBRE", name_w),
+            cell("ODOO", 12),
+            rcell("TAMAÑO", 10),
+            cell("DUEÑO", 12)
+        ),
     );
 
     if let Some(e) = &app.dbs_err {
-        f.render_widget(Line::styled(widgets::truncate(&format!("✗ {e}"), body.width as usize), t.err), body);
+        f.render_widget(
+            Paragraph::new(format!("✗ {e}"))
+                .style(Style::new().fg(t.err))
+                .wrap(ratatui::widgets::Wrap { trim: true }),
+            body,
+        );
+        detail(f, detail_area, app);
         return log(f, log_area, app, hits);
     }
     if rows.is_empty() && !app.dbs_loading {
@@ -80,34 +103,125 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
         } else {
             "no hay bases de datos"
         };
-        f.render_widget(Line::styled(format!(" {msg}"), t.dim), body);
+        f.render_widget(
+            Line::styled(format!("  {msg}"), Style::new().fg(t.dim).italic()),
+            body,
+        );
     }
     let lines: Vec<Line> = rows
         .iter()
         .map(|&i| {
             let d = &app.dbs[i];
             let (ver, vstyle) = match &d.version {
-                Some(v) => (v.as_str(), Style::new().fg(t.ok)),
-                None => ("—", Style::new().fg(t.dim)),
+                Some(v) => (format!("● {v}"), Style::new().fg(t.ok)),
+                None => ("○ —".to_string(), Style::new().fg(t.dim)),
             };
             Line::from(vec![
-                Span::styled(cell(&d.name, name_w), Style::new().fg(t.fg).bold()),
+                Span::styled(
+                    format!(" {}", cell(&d.name, name_w)),
+                    Style::new().fg(t.fg).bold(),
+                ),
                 Span::raw("  "),
-                Span::styled(cell(ver, 12), vstyle),
-                Span::styled(rcell(&human(d.size), 10), t.fg),
-                Span::styled(format!("  {}", cell(&d.owner, 12)), t.dim),
+                Span::styled(cell(&ver, 12), vstyle),
+                Span::styled(rcell(&human(d.size), 10), Style::new().fg(t.fg)),
+                Span::styled(format!("   {}", cell(&d.owner, 12)), Style::new().fg(t.dim)),
             ])
         })
         .collect();
     widgets::list(f, body, app, Pane::DbList, lines, &app.db_list, hits);
+    detail(f, detail_area, app);
     log(f, log_area, app, hits);
+}
+
+/// Tarjeta con la BD seleccionada y un resumen de todas.
+fn detail(f: &mut Frame, area: Rect, app: &App) {
+    if area.width == 0 {
+        return;
+    }
+    let t = &app.theme;
+    let inner = widgets::card(f, area, app, app.glyphs.info, "Detalle");
+    let row = |k: &str, v: String| {
+        Line::from(vec![
+            Span::styled(format!(" {k:<10}"), Style::new().fg(t.dim)),
+            Span::styled(v, Style::new().fg(t.fg)),
+        ])
+    };
+    let mut lines = vec![Line::raw("")];
+    match app.selected_db() {
+        Some(d) => {
+            lines.push(Line::styled(
+                format!(" {}", widgets::truncate(&d.name, inner.width as usize - 2)),
+                Style::new().fg(t.accent).bold(),
+            ));
+            lines.push(Line::raw(""));
+            let badge = match &d.version {
+                Some(v) => widgets::pill(
+                    vec![Span::styled(
+                        format!("Odoo {v}"),
+                        Style::new().fg(t.bg).bold(),
+                    )],
+                    t.ok,
+                    None,
+                    app,
+                ),
+                None => widgets::pill(
+                    vec![Span::styled("no es de Odoo", Style::new().fg(t.fg))],
+                    t.border,
+                    None,
+                    app,
+                ),
+            };
+            let mut b = vec![Span::raw(" ")];
+            b.extend(badge);
+            lines.push(Line::from(b));
+            lines.push(Line::raw(""));
+            lines.push(row("tamaño", human(d.size)));
+            lines.push(row("dueño", d.owner.clone()));
+            if let Some(p) = app.current() {
+                lines.push(row(
+                    "filestore",
+                    widgets::truncate(
+                        &format!("{}/{}", p.filestore().trim_end_matches('/'), d.name),
+                        (inner.width as usize).saturating_sub(12),
+                    ),
+                ));
+            }
+        }
+        None => lines.push(Line::styled(
+            " nada seleccionado",
+            Style::new().fg(t.dim).italic(),
+        )),
+    }
+    // Resumen abajo.
+    let total: u64 = app.dbs.iter().map(|d| d.size).sum();
+    let odoo = app.dbs.iter().filter(|d| d.version.is_some()).count();
+    let summary = vec![
+        Line::styled(
+            format!(" {}", "─".repeat(inner.width.saturating_sub(2) as usize)),
+            Style::new().fg(t.border),
+        ),
+        row("bases", format!("{} ({odoo} de Odoo)", app.dbs.len())),
+        row("en total", human(total)),
+    ];
+    let [top, bottom] = Layout::vertical([Constraint::Fill(1), Constraint::Length(3)]).areas(inner);
+    f.render_widget(Paragraph::new(lines), top);
+    f.render_widget(Paragraph::new(summary), bottom);
 }
 
 fn log(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     if area.height == 0 {
         return;
     }
-    let inner = widgets::frame(f, area, app, Pane::DbLog, Line::raw(" Operaciones "), hits);
+    let inner = widgets::frame(
+        f,
+        area,
+        app,
+        Pane::DbLog,
+        app.glyphs.log,
+        "Operaciones",
+        None,
+        hits,
+    );
     let inner = widgets::filter_bar(f, inner, app, Pane::DbLog, hits);
     widgets::log_view(f, inner, app, Pane::DbLog, &app.db_log, "", hits);
 }

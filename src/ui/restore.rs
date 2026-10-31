@@ -19,7 +19,8 @@ use crate::{
 
 pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     let t = &app.theme;
-    let [bar, main] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    let [bar, main] = Layout::vertical([Constraint::Length(2), Constraint::Fill(1)]).areas(area);
+    let bar = Rect { height: 1, ..bar };
     let restoring = app.busy.as_ref().is_some_and(|b| b.sink == Sink::Restore);
     let can = app.busy.is_none() && app.selected_backup().is_some_and(|b| b.dump.is_some());
     widgets::toolbar(
@@ -44,8 +45,17 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     // Backups.
     let rows = app.backup_rows();
     let dir = app.current().map(|p| p.backups_dir.as_str()).unwrap_or("");
-    let title = format!(" Backups ({}) {} ", rows.len(), widgets::truncate(dir, 30));
-    let inner = widgets::frame(f, left, app, Pane::Backups, Line::raw(title), hits);
+    let title = format!("Backups  {}", widgets::truncate(dir, 28));
+    let inner = widgets::frame(
+        f,
+        left,
+        app,
+        Pane::Backups,
+        app.glyphs.backup,
+        &title,
+        Some(rows.len().to_string()),
+        hits,
+    );
     let inner = widgets::filter_bar(f, inner, app, Pane::Backups, hits);
     let target_h = u16::from(app.restore_target.is_some());
     let [target, head, body] = Layout::vertical([
@@ -65,17 +75,15 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
         );
     }
     let name_w = (inner.width as usize).saturating_sub(28).clamp(10, 60);
-    f.render_widget(
-        Line::styled(
-            format!(
-                "    {} {} {}",
-                cell("carpeta", name_w),
-                rcell("dump", 9),
-                cell("  fs  fecha", 14)
-            ),
-            Style::new().fg(t.dim).bold(),
-        ),
+    widgets::header(
+        f,
         head,
+        app,
+        format!(
+            "    {} {}   FS  FECHA",
+            cell("CARPETA", name_w),
+            rcell("DUMP", 9),
+        ),
     );
     if let Some(e) = &app.backups_err {
         f.render_widget(
@@ -137,12 +145,17 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
             gauge,
         );
     }
-    let title = if restoring {
-        format!(" {} Restauración ", super::spinner(app))
-    } else {
-        " Restauración ".into()
-    };
-    let inner = widgets::frame(f, log_area, app, Pane::RestoreLog, Line::raw(title), hits);
+    let badge = restoring.then(|| super::spinner(app).to_string());
+    let inner = widgets::frame(
+        f,
+        log_area,
+        app,
+        Pane::RestoreLog,
+        app.glyphs.restore,
+        "Restauración",
+        badge,
+        hits,
+    );
     let inner = widgets::filter_bar(f, inner, app, Pane::RestoreLog, hits);
     widgets::log_view(
         f,
@@ -155,19 +168,17 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     );
 
     if hist_h > 0 {
-        let block = ratatui::widgets::Block::bordered()
-            .border_type(t.border_type)
-            .border_style(t.border)
-            .title(Line::styled(" Historial ", t.dim));
-        let inner = block.inner(hist);
-        f.render_widget(block, hist);
+        let inner = widgets::card(f, hist, app, app.glyphs.history, "Historial");
         let lines: Vec<Line> = app
             .history
             .iter()
             .take(inner.height as usize)
             .map(|e| {
                 Line::from(vec![
-                    Span::styled(if e.ok { "✓ " } else { "✗ " }, if e.ok { t.ok } else { t.err }),
+                    Span::styled(
+                        if e.ok { "✓ " } else { "✗ " },
+                        if e.ok { t.ok } else { t.err },
+                    ),
                     Span::styled(e.at.format("%d/%m %H:%M  ").to_string(), t.dim),
                     Span::styled(format!("{} ", e.db), Style::new().fg(t.fg).bold()),
                     Span::styled(format!("← {} ", e.backup), t.dim),

@@ -57,7 +57,10 @@ pub async fn copy(p: &Profile, from: &str, to: &str, tx: &Tx) -> Result<()> {
         return Ok(());
     };
     // Una BD sin adjuntos no tiene carpeta: no es un error.
-    if exec::capture(&sh(p, "test").args(["-d", &src])).await.is_err() {
+    if exec::capture(&sh(p, "test").args(["-d", &src]))
+        .await
+        .is_err()
+    {
         tx.log("sin filestore que copiar");
         return Ok(());
     }
@@ -71,7 +74,10 @@ pub async fn rename(p: &Profile, from: &str, to: &str, tx: &Tx) -> Result<()> {
     let (Some(src), Some(dst)) = (path(p, from, tx), path(p, to, tx)) else {
         return Ok(());
     };
-    if exec::capture(&sh(p, "test").args(["-d", &src])).await.is_err() {
+    if exec::capture(&sh(p, "test").args(["-d", &src]))
+        .await
+        .is_err()
+    {
         return Ok(());
     }
     run(sh(p, "mv").args(["-T", &src, &dst]), tx).await

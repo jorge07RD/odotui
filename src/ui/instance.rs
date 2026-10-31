@@ -15,12 +15,19 @@ use crate::{
 
 pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     let t = &app.theme;
-    let [status, bar, log_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
+    let [bar, status, log_area] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(2),
         Constraint::Fill(1),
     ])
     .areas(area);
+    let bar = Rect { height: 1, ..bar };
+    let status = Rect {
+        x: status.x + 1,
+        width: status.width.saturating_sub(1),
+        height: 1,
+        ..status
+    };
 
     let Some(p) = app.current() else {
         f.render_widget(Line::styled(" sin perfil", t.dim), status);
@@ -32,27 +39,66 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     } else if app.inst_status.starts_with("error") {
         ("●", t.err)
     } else {
-        ("○", t.dim)
+        ("○", t.border)
     };
-    let what = if p.is_docker() {
-        format!("contenedor {}", if p.odoo_container.is_empty() { "—" } else { &p.odoo_container })
+    let (icon, what) = if p.is_docker() {
+        (
+            app.glyphs.docker,
+            if p.odoo_container.is_empty() {
+                "—"
+            } else {
+                &p.odoo_container
+            },
+        )
     } else {
-        format!("odoo-bin {}", if p.odoo_bin.is_empty() { "—" } else { &p.odoo_bin })
+        (
+            app.glyphs.local,
+            if p.odoo_bin.is_empty() {
+                "—"
+            } else {
+                &p.odoo_bin
+            },
+        )
     };
-    // Lo corto primero: la ruta de odoo-bin puede ser larga y se recorta.
-    let mut spans = vec![
-        Span::styled(format!(" {dot} {} ", app.inst_status), Style::new().fg(color).bold()),
-        Span::styled(format!(" {} ", p.url()), t.accent),
-    ];
+    // Estado como pastilla de color; luego la URL y, al final, lo largo.
+    let fg_on = if running || color == t.err {
+        t.bg
+    } else {
+        t.fg
+    };
+    let mut spans = widgets::pill(
+        vec![Span::styled(
+            format!("{dot} {}", app.inst_status),
+            Style::new().fg(fg_on).bold(),
+        )],
+        color,
+        None,
+        app,
+    );
+    spans.push(Span::raw(" "));
+    spans.extend(widgets::pill(
+        vec![Span::styled(p.url().to_string(), Style::new().fg(t.accent))],
+        t.surface,
+        None,
+        app,
+    ));
     if !p.is_docker() && app.dev {
-        spans.push(Span::styled(" --dev=all ", Style::new().fg(t.warn)));
+        spans.push(Span::raw(" "));
+        spans.extend(widgets::pill(
+            vec![Span::styled("--dev=all", Style::new().fg(t.warn))],
+            t.surface,
+            None,
+            app,
+        ));
     }
-    spans.push(Span::styled(format!(" {what}"), t.dim));
+    spans.push(Span::styled(
+        format!("  {icon} {what}"),
+        Style::new().fg(t.dim),
+    ));
     f.render_widget(Line::from(spans), status);
 
     let idle = app.busy.is_none();
     let local = !p.is_docker();
-    let logs_label = if local { "Logs" } else { "Logs on/off" };
     widgets::toolbar(
         f,
         bar,
@@ -63,7 +109,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
                 .enabled(idle && running)
                 .danger(),
             Btn::new("R", "Reiniciar", Action::Cmd(Cmd::InstRestart)).enabled(idle),
-            Btn::new("L", logs_label, Action::Cmd(Cmd::InstLogs)).enabled(!local),
+            Btn::new("L", "Logs on/off", Action::Cmd(Cmd::InstLogs)),
             Btn::new("v", "--dev", Action::Cmd(Cmd::InstDev)).enabled(local),
             Btn::new("o", "Abrir", Action::Cmd(Cmd::InstOpen)),
             Btn::new("f", "Seguir", Action::Cmd(Cmd::Follow)),
@@ -73,10 +119,24 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
         hits,
     );
 
-    let inner = widgets::frame(f, log_area, app, Pane::InstanceLog, Line::raw(" Log "), hits);
+    let badge = if app.inst_log.is_empty() {
+        None
+    } else {
+        Some(app.inst_log.visible().len().to_string())
+    };
+    let inner = widgets::frame(
+        f,
+        log_area,
+        app,
+        Pane::InstanceLog,
+        app.glyphs.log,
+        "Log de Odoo",
+        badge,
+        hits,
+    );
     let inner = widgets::filter_bar(f, inner, app, Pane::InstanceLog, hits);
     let empty = if local {
-        " pulsa s para lanzar odoo-bin; su salida aparece aquí"
+        " pulsa s para lanzar odoo-bin en segundo plano; su log aparece aquí"
     } else {
         " sin logs (¿contenedor detenido? L para reconectar)"
     };

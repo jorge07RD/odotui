@@ -45,7 +45,11 @@ pub fn literal(s: &str) -> String {
 /// `psql` conectado a `db`, con la contraseña por entorno.
 pub fn psql(p: &Profile, db: &str) -> Spec {
     let in_container = p.is_docker() && !p.pg_container.is_empty();
-    let host = if in_container { "127.0.0.1" } else { &p.pg_host };
+    let host = if in_container {
+        "127.0.0.1"
+    } else {
+        &p.pg_host
+    };
     let mut s = Spec::new("psql").arg("-X");
     if !host.is_empty() {
         s = s.args(["-h", host]);
@@ -168,12 +172,21 @@ pub async fn disconnect(p: &Profile, db: &str) -> Result<()> {
 
 pub async fn drop(p: &Profile, db: &str) -> Result<()> {
     disconnect(p, db).await?;
-    execute(p, "postgres", &format!("DROP DATABASE IF EXISTS {}", ident(db))).await
+    execute(
+        p,
+        "postgres",
+        &format!("DROP DATABASE IF EXISTS {}", ident(db)),
+    )
+    .await
 }
 
 pub async fn duplicate(p: &Profile, from: &str, to: &str) -> Result<()> {
     disconnect(p, from).await?;
-    let mut sql = format!("CREATE DATABASE {} WITH TEMPLATE {}", ident(to), ident(from));
+    let mut sql = format!(
+        "CREATE DATABASE {} WITH TEMPLATE {}",
+        ident(to),
+        ident(from)
+    );
     if !p.pg_user.is_empty() {
         sql += &format!(" OWNER {}", ident(&p.pg_user));
     }

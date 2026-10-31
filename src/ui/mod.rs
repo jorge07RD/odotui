@@ -67,17 +67,21 @@ pub fn draw(f: &mut Frame, app: &App, hits: &mut HitMap) {
 
 fn draw_header(f: &mut Frame, row: Rect, app: &App, hits: &mut HitMap) {
     let t = &app.theme;
+    let g = app.glyphs;
+    f.buffer_mut().set_style(row, Style::new().bg(t.bar));
+    let on_bar = |c| Style::new().fg(c).bg(t.bar);
+
     let menu = Rect::new(row.x, row.y, 3, 1);
-    let menu_bg = if app.hovered(menu) { t.border } else { t.surface };
+    let menu_bg = if app.hovered(menu) { t.sel } else { t.bar };
     f.render_widget(
         Span::styled(" ≡ ", Style::new().fg(t.fg).bg(menu_bg).bold()),
         menu,
     );
     hits.push(menu, Action::Palette);
-    let narrow = row.width < 90;
+    let narrow = row.width < 100;
     let brand = if narrow { " ◆ " } else { " ◆ odotui " };
     f.render_widget(
-        Span::styled(brand, Style::new().fg(t.accent).bold()),
+        Span::styled(brand, on_bar(t.accent).bold()),
         Rect {
             x: row.x + 3,
             width: row.width.saturating_sub(3),
@@ -85,28 +89,76 @@ fn draw_header(f: &mut Frame, row: Rect, app: &App, hits: &mut HitMap) {
         },
     );
 
-    // Derecha: tarea en curso y selector de perfil.
-    let mut right = vec![];
+    // Derecha: IA, tarea en curso y perfil.
+    let pill = match app.current() {
+        Some(p) => {
+            let icon = if p.is_docker() { g.docker } else { g.local };
+            widgets::pill(
+                vec![Span::styled(
+                    format!("{icon} {} ▾", p.name),
+                    Style::new().fg(t.fg).bold(),
+                )],
+                t.surface,
+                Some(t.bar),
+                app,
+            )
+        }
+        None => widgets::pill(
+            vec![Span::styled("sin perfil ▾", Style::new().fg(t.warn))],
+            t.surface,
+            Some(t.bar),
+            app,
+        ),
+    };
+    let pill_w = widgets::spans_width(&pill);
+    let pill_r = Rect::new(row.right().saturating_sub(pill_w + 1), row.y, pill_w, 1);
+    let pill = if app.hovered(pill_r) {
+        pill.into_iter()
+            .map(|s| {
+                let st = if s.style.bg == Some(t.surface) {
+                    s.style.bg(t.sel)
+                } else if s.style.fg == Some(t.surface) {
+                    s.style.fg(t.sel)
+                } else {
+                    s.style
+                };
+                s.style(st)
+            })
+            .collect()
+    } else {
+        pill
+    };
+    f.render_widget(Line::from(pill), pill_r);
+    hits.push(pill_r, Action::NextProfile);
+
+    let mut right: Vec<Span> = vec![];
+    if app.ai_active() {
+        right.extend(widgets::pill(
+            vec![Span::styled(
+                format!("{} IA", g.ai),
+                Style::new().fg(t.bg).bold(),
+            )],
+            t.warn,
+            Some(t.bar),
+            app,
+        ));
+        right.push(Span::styled(" ", on_bar(t.fg)));
+    } else if app.ai_listening {
+        right.push(Span::styled(format!("{} IA  ", g.ai), on_bar(t.dim)));
+    }
     if let Some(b) = &app.busy {
         right.push(Span::styled(
-            format!("{} {} {}s  ", spinner(app), b.label, b.started.elapsed().as_secs()),
-            t.warn,
+            format!(
+                "{} {} {}s  ",
+                spinner(app),
+                b.label,
+                b.started.elapsed().as_secs()
+            ),
+            on_bar(t.warn),
         ));
     }
-    let pill = match app.current() {
-        Some(p) => format!(" ◆ {} · {} ▾ ", p.name, p.mode.as_str()),
-        None => " sin perfil ▾ ".into(),
-    };
-    let pill_w = Line::raw(pill.as_str()).width() as u16;
-    let pill_r = Rect::new(row.right().saturating_sub(pill_w), row.y, pill_w, 1);
-    let busy_w = Line::from(right.clone()).width() as u16;
-    let pill_bg = if app.hovered(pill_r) { t.border } else { t.surface };
-    f.render_widget(
-        Span::styled(pill, Style::new().fg(t.accent).bg(pill_bg).bold()),
-        pill_r,
-    );
-    hits.push(pill_r, Action::NextProfile);
-    let busy_r = Rect::new(pill_r.x.saturating_sub(busy_w), row.y, busy_w, 1);
+    let busy_w = widgets::spans_width(&right);
+    let busy_r = Rect::new(pill_r.x.saturating_sub(busy_w + 1), row.y, busy_w, 1);
     if !narrow {
         f.render_widget(Line::from(right), busy_r);
         if app.busy.is_some() {
@@ -114,27 +166,42 @@ fn draw_header(f: &mut Frame, row: Rect, app: &App, hits: &mut HitMap) {
         }
     }
 
-    let mut x = row.x + 3 + Line::raw(brand).width() as u16;
+    // Pestañas: la activa es una pastilla de acento.
+    let icons = [g.db, g.restore, g.server, g.modules, g.profiles];
+    let mut x = row.x + 3 + Line::raw(brand).width() as u16 + 1;
     let limit = if narrow { pill_r.x } else { busy_r.x };
     for (i, tab) in Tab::ALL.iter().enumerate() {
-        let label = if narrow {
-            format!(" {} ", i + 1)
+        let text = if narrow {
+            format!("{} {}", i + 1, icons[i])
         } else {
-            format!(" {} {} ", i + 1, tab.title())
+            format!("{} {} {}", i + 1, icons[i], tab.title())
         };
-        let w = Line::raw(label.as_str()).width() as u16;
+        let spans = if *tab == app.tab {
+            widgets::pill(
+                vec![Span::styled(text.clone(), Style::new().fg(t.bg).bold())],
+                t.accent,
+                Some(t.bar),
+                app,
+            )
+        } else {
+            vec![Span::styled(format!(" {text} "), on_bar(t.dim))]
+        };
+        let w = widgets::spans_width(&spans);
         if x + w > limit {
             break;
         }
         let r = Rect::new(x, row.y, w, 1);
-        let style = if *tab == app.tab {
-            Style::new().fg(t.surface).bg(t.accent).bold()
-        } else if app.hovered(r) {
-            Style::new().fg(t.fg).bg(t.border)
+        let spans = if *tab != app.tab && app.hovered(r) {
+            widgets::pill(
+                vec![Span::styled(text, Style::new().fg(t.fg))],
+                t.surface,
+                Some(t.bar),
+                app,
+            )
         } else {
-            Style::new().fg(t.dim)
+            spans
         };
-        f.render_widget(Span::styled(label, style), r);
+        f.render_widget(Line::from(spans), r);
         hits.push(r, Action::Tab(*tab));
         x += w + 1;
     }
@@ -142,36 +209,76 @@ fn draw_header(f: &mut Frame, row: Rect, app: &App, hits: &mut HitMap) {
 
 fn draw_footer(f: &mut Frame, row: Rect, app: &App, hits: &mut HitMap) {
     let t = &app.theme;
-    let buttons: &[(&str, Action)] = &[
-        (" : comandos ", Action::Palette),
-        (" ? ayuda ", Action::Help),
-        (" q salir ", Action::Quit),
+    f.buffer_mut().set_style(row, Style::new().bg(t.bar));
+    let buttons: &[(&str, &str, Action)] = &[
+        (":", "comandos", Action::Palette),
+        ("?", "ayuda", Action::Help),
+        ("q", "salir", Action::Quit),
     ];
-    let mut x = row.right();
-    for (label, action) in buttons.iter().rev() {
-        let w = Line::raw(*label).width() as u16;
+    let mut x = row.right().saturating_sub(1);
+    for (key, label, action) in buttons.iter().rev() {
+        let spans = |hover: bool| {
+            widgets::pill(
+                vec![
+                    Span::styled(format!("{key} "), Style::new().fg(t.accent).bold()),
+                    Span::styled(*label, Style::new().fg(t.fg)),
+                ],
+                if hover { t.sel } else { t.surface },
+                Some(t.bar),
+                app,
+            )
+        };
+        let w = widgets::spans_width(&spans(false));
         x = x.saturating_sub(w);
         let r = Rect::new(x, row.y, w, 1);
-        let bg = if app.hovered(r) { t.border } else { t.surface };
-        f.render_widget(Span::styled(*label, Style::new().fg(t.fg).bg(bg)), r);
+        f.render_widget(Line::from(spans(app.hovered(r))), r);
         hits.push(r, *action);
         x = x.saturating_sub(1);
     }
-    let hint = match app.tab {
-        Tab::Dbs => "clic: seleccionar · 2º clic/Enter: módulos · ←→ panel · / filtrar",
-        Tab::Restore => "2º clic/Enter en un backup: restaurar · / filtrar · rueda: scroll",
-        Tab::Instance => "rueda/arrastre: scroll · f seguir · / filtrar",
-        Tab::Modules => "clic en [ ] o Espacio: marcar · i instalar · u actualizar",
-        Tab::Profiles => "2º clic/Enter: usar perfil · p o clic en el perfil arriba: cambiar",
+    let hints: &[(&str, &str)] = match app.tab {
+        Tab::Dbs => &[
+            ("Enter", "módulos"),
+            ("/", "filtrar"),
+            ("←→", "panel"),
+            ("2º clic", "abrir"),
+        ],
+        Tab::Restore => &[
+            ("Enter", "restaurar"),
+            ("/", "filtrar"),
+            ("X", "cancelar"),
+            ("rueda", "scroll"),
+        ],
+        Tab::Instance => &[
+            ("f", "seguir"),
+            ("/", "filtrar"),
+            ("rueda", "scroll"),
+            ("o", "abrir web"),
+        ],
+        Tab::Modules => &[
+            ("Espacio", "marcar"),
+            ("i", "instalar"),
+            ("u", "actualizar"),
+            ("b", "otra BD"),
+        ],
+        Tab::Profiles => &[
+            ("Enter", "usar"),
+            ("p", "siguiente perfil"),
+            ("t", "probar"),
+        ],
     };
+    let mut spans = vec![Span::raw(" ")];
+    for (k, d) in hints {
+        spans.push(Span::styled(*k, Style::new().fg(t.accent).bg(t.bar).bold()));
+        spans.push(Span::styled(
+            format!(" {d}   "),
+            Style::new().fg(t.dim).bg(t.bar),
+        ));
+    }
     let left = Rect {
         width: x.saturating_sub(row.x),
         ..row
     };
-    f.render_widget(
-        Span::styled(widgets::truncate(&format!(" {hint}"), left.width as usize), t.dim),
-        left,
-    );
+    f.render_widget(Line::from(spans), left);
 }
 
 fn draw_toast(f: &mut Frame, body: Rect, app: &App) {
@@ -180,15 +287,30 @@ fn draw_toast(f: &mut Frame, body: Rect, app: &App) {
         return;
     }
     let t = &app.theme;
-    let text = widgets::truncate(&format!("  {msg}  "), body.width as usize);
-    let w = Line::raw(text.as_str()).width() as u16;
-    let r = Rect::new(body.x + (body.width - w) / 2, body.bottom() - 2, w, 1);
-    let color = if msg.starts_with('✗') { t.err } else { t.fg };
-    f.render_widget(Clear, r);
-    f.render_widget(
-        Paragraph::new(text).style(Style::new().fg(color).bg(t.surface).bold()),
-        r,
+    let (color, msg) = if let Some(m) = msg.strip_prefix("✗ ") {
+        (t.err, format!("✗ {m}"))
+    } else if let Some(m) = msg.strip_prefix("✓ ") {
+        (t.ok, format!("✓ {m}"))
+    } else {
+        (t.accent, format!("● {msg}"))
+    };
+    let text = widgets::truncate(&msg, body.width.saturating_sub(6) as usize);
+    // Pastilla con el tipo marcado en color a la izquierda.
+    let spans = widgets::pill(
+        vec![Span::styled(text, Style::new().fg(color).bold())],
+        t.sel,
+        None,
+        app,
     );
+    let w = widgets::spans_width(&spans);
+    let r = Rect::new(
+        body.x + (body.width.saturating_sub(w)) / 2,
+        body.bottom() - 2,
+        w,
+        1,
+    );
+    f.render_widget(Clear, r);
+    f.render_widget(Line::from(spans), r);
 }
 
 pub fn popup(screen: Rect, max_w: u16, max_h: u16) -> Rect {
@@ -202,30 +324,49 @@ pub fn popup(screen: Rect, max_w: u16, max_h: u16) -> Rect {
     )
 }
 
-pub fn card<'a>(app: &App, title: Line<'a>) -> Block<'a> {
-    Block::bordered()
-        .border_type(app.theme.border_type)
-        .border_style(app.theme.accent)
-        .style(Style::new().bg(app.theme.surface))
-        .title(title)
+/// Marco de popup: borde redondeado de acento sobre el fondo de la terminal
+/// y el interior relleno, así las esquinas quedan limpias. Devuelve el interior.
+pub fn popup_frame(f: &mut Frame, area: Rect, app: &App, title: Line) -> Rect {
+    let t = &app.theme;
+    f.render_widget(Clear, area);
+    let block = Block::bordered()
+        .border_type(t.border_type)
+        .border_style(t.accent)
+        .title(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    f.buffer_mut().set_style(inner, Style::new().bg(t.surface));
+    inner
 }
 
-/// Botones grandes de los popups.
+/// Botones de los popups: el primero es el principal (relleno de acento).
 fn button_row(f: &mut Frame, row: Rect, app: &App, buttons: &[(&str, Action)], hits: &mut HitMap) {
     let t = &app.theme;
     let mut x = row.x;
-    for (label, action) in buttons {
-        let w = Line::raw(*label).width() as u16;
+    for (i, (label, action)) in buttons.iter().enumerate() {
+        let make = |hover: bool| {
+            let (fg, bg) = match (i, hover) {
+                (0, false) => (t.bg, t.accent),
+                (0, true) => (t.bg, t.fg),
+                (_, false) => (t.fg, t.sel),
+                (_, true) => (t.bg, t.fg),
+            };
+            widgets::pill(
+                vec![Span::styled(
+                    label.trim().to_string(),
+                    Style::new().fg(fg).bold(),
+                )],
+                bg,
+                Some(t.surface),
+                app,
+            )
+        };
+        let w = widgets::spans_width(&make(false));
         if x + w > row.right() {
             break;
         }
         let r = Rect::new(x, row.y, w, 1);
-        let style = if app.hovered(r) {
-            Style::new().fg(t.surface).bg(t.fg).bold()
-        } else {
-            Style::new().fg(t.surface).bg(t.accent).bold()
-        };
-        f.render_widget(Span::styled(*label, style), r);
+        f.render_widget(Line::from(make(app.hovered(r))), r);
         hits.push(r, *action);
         x += w + 2;
     }
@@ -250,6 +391,7 @@ fn draw_help(f: &mut Frame, app: &App, hits: &mut HitMap) {
         item("rueda/arrastre", "scroll de listas y logs"),
         item("⇣ siguiendo", "pausa o sigue el final del log"),
         item("≡", "paleta de comandos"),
+        item("◉ IA", "una IA está trabajando (odotui mcp)"),
         Line::raw(""),
         head("Teclado"),
         item("Tab  1-5", "pestañas · p perfil siguiente"),
@@ -269,10 +411,13 @@ fn draw_help(f: &mut Frame, app: &App, hits: &mut HitMap) {
     // Alto justo: bordes + líneas + hueco + botón.
     let area = popup(screen, 72, lines.len() as u16 + 4);
     hits.modal(screen, area);
-    f.render_widget(Clear, area);
-    let block = card(app, Line::styled(" Ayuda ", Style::new().fg(t.fg).bold()));
-    let inner = block.inner(area).inner(Margin::new(1, 0));
-    f.render_widget(block, area);
+    let inner = popup_frame(
+        f,
+        area,
+        app,
+        Line::styled(" Ayuda ", Style::new().fg(t.fg).bold()),
+    )
+    .inner(Margin::new(1, 0));
     let [text, buttons] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
     f.render_widget(Paragraph::new(lines), text);
@@ -284,19 +429,26 @@ fn draw_palette(f: &mut Frame, app: &App, hits: &mut HitMap) {
     let t = &app.theme;
     let screen = f.area();
     let area = popup(screen, 64, 20);
-    let area = Rect { y: screen.y + 2, ..area };
+    let area = Rect {
+        y: screen.y + 2,
+        ..area
+    };
     hits.modal(screen, area);
-    f.render_widget(Clear, area);
-    let block = card(app, Line::styled(" Comandos ", Style::new().fg(t.fg).bold()));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let [query, list] =
-        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
+    let inner = popup_frame(
+        f,
+        area,
+        app,
+        Line::styled(" Comandos ", Style::new().fg(t.fg).bold()),
+    );
+    let [query, list] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
     f.buffer_mut().set_style(query, Style::new().bg(t.border));
     f.render_widget(
         Line::from(vec![
             Span::styled(" › ", Style::new().fg(t.accent).bg(t.border).bold()),
-            Span::styled(format!("{}▏", pal.query), Style::new().fg(t.fg).bg(t.border)),
+            Span::styled(
+                format!("{}▏", pal.query),
+                Style::new().fg(t.fg).bg(t.border),
+            ),
         ]),
         query,
     );
@@ -338,13 +490,13 @@ fn draw_form(f: &mut Frame, app: &App, form: &Form, hits: &mut HitMap) {
     // Alto justo para el contenido (bordes + campos + error + botones).
     let area = popup(screen, 72, total + err_h + 3);
     hits.modal_strict(screen);
-    f.render_widget(Clear, area);
-    let block = card(
+    let inner = popup_frame(
+        f,
+        area,
         app,
         Line::styled(format!(" ✎ {} ", form.title), Style::new().fg(t.fg).bold()),
-    );
-    let inner = block.inner(area).inner(Margin::new(1, 0));
-    f.render_widget(block, area);
+    )
+    .inner(Margin::new(1, 0));
 
     let [body, error, buttons] = Layout::vertical([
         Constraint::Fill(1),
@@ -487,10 +639,13 @@ fn draw_confirm(f: &mut Frame, app: &App, message: &str, hits: &mut HitMap) {
     let screen = f.area();
     let area = popup(screen, 60, 8);
     hits.modal(screen, area);
-    f.render_widget(Clear, area);
-    let block = card(app, Line::styled(" Confirmar ", Style::new().fg(t.warn).bold()));
-    let inner = block.inner(area).inner(Margin::new(1, 0));
-    f.render_widget(block, area);
+    let inner = popup_frame(
+        f,
+        area,
+        app,
+        Line::styled(" Confirmar ", Style::new().fg(t.warn).bold()),
+    )
+    .inner(Margin::new(1, 0));
     let [text, buttons] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
     f.render_widget(

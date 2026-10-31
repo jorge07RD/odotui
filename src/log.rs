@@ -42,11 +42,41 @@ pub fn level(line: &str) -> Level {
         Level::Info
     } else if has("DEBUG") {
         Level::Debug
-    } else if line.starts_with("Traceback") || line.starts_with("    ") && line.contains("File \"") {
+    } else if line.starts_with("Traceback")
+        || line.trim_start().starts_with("File \"")
+        || is_exception(line)
+    {
         Level::Error
     } else {
         Level::Plain
     }
+}
+
+/// Para buscar: minúsculas y sin tildes («Módulos» ≈ «modulos»).
+pub fn fold(s: &str) -> String {
+    s.chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| match c {
+            'á' | 'à' | 'â' | 'ä' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ó' | 'ò' | 'ô' | 'ö' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            'ñ' => 'n',
+            c => c,
+        })
+        .collect()
+}
+
+/// `ValueError: …`, `odoo.exceptions.UserError: …`: la última línea de un traceback.
+fn is_exception(line: &str) -> bool {
+    let Some((name, _)) = line.split_once(": ") else {
+        return false;
+    };
+    !name.contains(' ')
+        && ["Error", "Exception", "Warning", "Interrupt"]
+            .iter()
+            .any(|s| name.ends_with(s))
 }
 
 #[derive(Debug, Clone)]
@@ -90,17 +120,21 @@ impl LogView {
     }
 
     pub fn visible(&self) -> Vec<&str> {
-        let f = self.filter.to_lowercase();
+        let f = fold(&self.filter);
         self.lines
             .iter()
-            .filter(|l| f.is_empty() || l.to_lowercase().contains(&f))
+            .filter(|l| f.is_empty() || fold(l).contains(&f))
             .map(String::as_str)
             .collect()
     }
 
     /// Mueve el scroll; llegar al final vuelve a seguir.
     pub fn scroll(&mut self, delta: i32, max: usize) {
-        let cur = if self.follow { max } else { self.offset.min(max) };
+        let cur = if self.follow {
+            max
+        } else {
+            self.offset.min(max)
+        };
         let next = (cur as i64 + i64::from(delta)).clamp(0, max as i64) as usize;
         self.offset = next;
         self.follow = next >= max;
@@ -140,7 +174,7 @@ impl ListState {
     }
 
     pub fn matches(&self, text: &str) -> bool {
-        self.filter.is_empty() || text.to_lowercase().contains(&self.filter.to_lowercase())
+        self.filter.is_empty() || fold(text).contains(&fold(&self.filter))
     }
 }
 
@@ -156,11 +190,19 @@ mod tests {
         assert_eq!(level(w), Level::Warn);
         let e = "2025-04-28 10:00:01,123 7 ERROR prod odoo.sql_db: bad query";
         assert_eq!(level(e), Level::Error);
-        assert_eq!(level("psql:<stdin>:12: ERROR:  must be owner of extension"), Level::Error);
+        assert_eq!(
+            level("psql:<stdin>:12: ERROR:  must be owner of extension"),
+            Level::Error
+        );
         assert_eq!(level("$ psql -X"), Level::Cmd);
         assert_eq!(level("▶ 1/4 Preparando"), Level::Step);
         // «INFO» en el mensaje, no en la cabecera, no cuenta… salvo al principio.
         assert_eq!(level("hola mundo"), Level::Plain);
+        assert_eq!(level("  File \"x.py\", line 1"), Level::Error);
+        assert_eq!(level("ValueError: boom"), Level::Error);
+        assert_eq!(level("odoo.exceptions.UserError: no"), Level::Error);
+        assert_eq!(level("nota: nada que ver"), Level::Plain);
+        assert_eq!(fold("Ir a Módulos ÑU"), "ir a modulos nu");
     }
 
     #[test]

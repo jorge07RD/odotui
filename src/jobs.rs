@@ -1,6 +1,8 @@
 //! Mensajes de las tareas en segundo plano hacia la interfaz.
 
-use tokio::sync::mpsc::UnboundedSender;
+use std::sync::{Arc, Mutex};
+
+use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
 use crate::odoo::{modules::ModuleInfo, pg::DbInfo, restore::Backup};
 
@@ -12,6 +14,14 @@ pub enum Sink {
     Instance,
     Modules,
     Profiles,
+}
+
+/// Pedido de una IA (por MCP) a la TUI abierta.
+#[derive(Debug)]
+pub struct AiRequest {
+    pub tool: String,
+    pub args: serde_json::Value,
+    pub reply: oneshot::Sender<Result<String, String>>,
 }
 
 #[derive(Debug)]
@@ -26,33 +36,79 @@ pub enum Ev {
     Backups(u64, Result<Vec<Backup>, String>),
     Modules(u64, String, Result<Vec<ModuleInfo>, String>),
     Status(u64, String),
-    /// Terminó `docker logs -f` (el contenedor se detuvo o se canceló).
+    /// Terminó el seguimiento n.º tal del log de Odoo (se detuvo o se canceló).
     LogsEnded(u64),
-    /// Terminó el `odoo-bin` lanzado en modo local.
-    ServerEnded(Result<String, String>),
+    Ai(AiRequest),
 }
 
-/// Remitente atado a un log.
+/// Remitente atado a un log; además puede guardar las líneas para devolvérselas
+/// a una IA.
 #[derive(Debug, Clone)]
 pub struct Tx {
-    pub tx: UnboundedSender<Ev>,
+    tx: Option<UnboundedSender<Ev>>,
     pub sink: Sink,
+    /// Cada `capturing()` añade un destino más; ninguno reemplaza a otro.
+    capture: Vec<Arc<Mutex<Vec<String>>>>,
 }
 
 impl Tx {
     pub fn new(tx: UnboundedSender<Ev>, sink: Sink) -> Self {
-        Self { tx, sink }
+        Self {
+            tx: Some(tx),
+            sink,
+            capture: vec![],
+        }
+    }
+
+    /// Sin interfaz: las líneas solo se guardan.
+    pub fn detached() -> Self {
+        Self {
+            tx: None,
+            sink: Sink::Profiles,
+            capture: vec![],
+        }
+    }
+
+    /// Copia que además guarda cada línea; devuelve dónde.
+    pub fn capturing(&self) -> (Self, Arc<Mutex<Vec<String>>>) {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let mut t = self.clone();
+        t.capture.push(buf.clone());
+        (t, buf)
     }
 
     pub fn log(&self, line: impl Into<String>) {
-        let _ = self.tx.send(Ev::Log(self.sink, line.into()));
+        let line = line.into();
+        for c in &self.capture {
+            if let Ok(mut c) = c.lock() {
+                c.push(line.clone());
+            }
+        }
+        self.send(Ev::Log(self.sink, line));
     }
 
     pub fn progress(&self, p: f64) {
-        let _ = self.tx.send(Ev::Progress(p));
+        self.send(Ev::Progress(p));
     }
 
     pub fn send(&self, ev: Ev) {
-        let _ = self.tx.send(ev);
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(ev);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_captures_all_receive_lines() {
+        let (outer, a) = Tx::detached().capturing();
+        let (inner, b) = outer.capturing();
+        inner.log("x");
+        outer.log("y");
+        assert_eq!(*a.lock().unwrap(), ["x", "y"]);
+        assert_eq!(*b.lock().unwrap(), ["x"]);
     }
 }
