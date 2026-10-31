@@ -106,6 +106,7 @@ impl Form {
             ("python", p.python.clone()),
             ("odoo_conf", p.odoo_conf.clone()),
             ("addons_dir", p.addons_dir.clone()),
+            ("addons_host_dir", p.addons_host_dir.clone()),
         ]);
         let title = match index {
             Some(_) => format!("Editar perfil {}", p.name),
@@ -201,6 +202,14 @@ impl Form {
                     },
                     Text,
                 ));
+                if docker {
+                    specs.push((
+                        "addons_host_dir",
+                        "Addons en el host",
+                        "el bind mount de lo anterior",
+                        Text,
+                    ));
+                }
                 specs.push(("backups_dir", "Carpeta de backups", "en este equipo", Text));
                 specs.push((
                     "filestore_dir",
@@ -448,6 +457,11 @@ impl Form {
             python: pick("python"),
             odoo_conf: pick("odoo_conf"),
             addons_dir: pick("addons_dir"),
+            addons_host_dir: if mode == Mode::Docker {
+                pick("addons_host_dir")
+            } else {
+                String::new()
+            },
         })
     }
 }

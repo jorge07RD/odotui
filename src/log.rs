@@ -1,6 +1,6 @@
 //! Estado de los logs (restauración, instancia, módulos…) y de las listas.
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, ops::Range};
 
 const MAX_LINES: usize = 5000;
 
@@ -79,6 +79,38 @@ fn is_exception(line: &str) -> bool {
             .any(|s| name.ends_with(s))
 }
 
+/// Cada error con su traceback: un `ERROR`/`CRITICAL` (o un `Traceback`
+/// suelto) más las líneas con sangría y la excepción final. Lo demás sin fecha
+/// (p. ej. de psql) no cuenta. Devuelve los rangos de líneas.
+pub fn error_blocks<S: AsRef<str>>(lines: &[S]) -> Vec<Range<usize>> {
+    let starts_entry = |l: &str| l.len() > 4 && l.as_bytes()[..4].iter().all(u8::is_ascii_digit);
+    let mut out = vec![];
+    let mut i = 0;
+    while i < lines.len() {
+        let l = lines[i].as_ref();
+        if !(matches!(level(l), Level::Error) && !l.starts_with('✗')) {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        let mut tb = l.starts_with("Traceback");
+        while j < lines.len() && !starts_entry(lines[j].as_ref()) && j - i <= 40 {
+            let l = lines[j].as_ref();
+            if !(l.starts_with("Traceback") || tb) {
+                break;
+            }
+            tb = true;
+            j += 1;
+            if !l.starts_with(' ') && !l.starts_with("Traceback") {
+                break;
+            }
+        }
+        out.push(i..j);
+        i = j;
+    }
+    out
+}
+
 #[derive(Debug, Clone)]
 pub struct LogView {
     lines: VecDeque<String>,
@@ -87,6 +119,8 @@ pub struct LogView {
     /// Pegado al final: las líneas nuevas se ven solas.
     pub follow: bool,
     pub filter: String,
+    /// Solo los errores con sus tracebacks.
+    pub errors_only: bool,
 }
 
 impl Default for LogView {
@@ -96,6 +130,7 @@ impl Default for LogView {
             offset: 0,
             follow: true,
             filter: String::new(),
+            errors_only: false,
         }
     }
 }
@@ -120,12 +155,52 @@ impl LogView {
     }
 
     pub fn visible(&self) -> Vec<&str> {
+        self.visible_indexed().into_iter().map(|(_, l)| l).collect()
+    }
+
+    /// Las líneas visibles con su posición en el log completo.
+    pub fn visible_indexed(&self) -> Vec<(usize, &str)> {
         let f = fold(&self.filter);
+        let keep = self.errors_only.then(|| self.blocks());
         self.lines
             .iter()
-            .filter(|l| f.is_empty() || fold(l).contains(&f))
-            .map(String::as_str)
+            .enumerate()
+            .filter(|(i, _)| {
+                keep.as_ref()
+                    .is_none_or(|b| b.iter().any(|r| r.contains(i)))
+            })
+            .filter(|(_, l)| f.is_empty() || fold(l).contains(&f))
+            .map(|(i, l)| (i, l.as_str()))
             .collect()
+    }
+
+    pub fn blocks(&self) -> Vec<Range<usize>> {
+        let (a, b) = self.lines.as_slices();
+        if b.is_empty() {
+            error_blocks(a)
+        } else {
+            error_blocks(&self.lines.iter().collect::<Vec<_>>())
+        }
+    }
+
+    /// El texto del bloque de error que contiene la línea `i`.
+    pub fn block_at(&self, i: usize) -> Option<String> {
+        let r = self.blocks().into_iter().find(|r| r.contains(&i))?;
+        Some(self.text(r))
+    }
+
+    /// El último error con su traceback.
+    pub fn last_block(&self) -> Option<String> {
+        let r = self.blocks().pop()?;
+        Some(self.text(r))
+    }
+
+    fn text(&self, r: Range<usize>) -> String {
+        self.lines
+            .range(r)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Mueve el scroll; llegar al final vuelve a seguir.
@@ -181,6 +256,32 @@ impl ListState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blocks_take_the_whole_traceback() {
+        let mut v = LogView::default();
+        for l in [
+            "2025-01-01 10:00:00,000 1 INFO db odoo: inicio",
+            "2025-01-01 10:00:01,000 1 ERROR db odoo.sql_db: bad query",
+            "Traceback (most recent call last):",
+            "  File \"/x.py\", line 3, in f",
+            "    g()",
+            "psycopg2.errors.UndefinedTable: relation \"x\" does not exist",
+            "2025-01-01 10:00:02,000 1 INFO db odoo: sigue",
+            "Traceback (most recent call last):",
+            "  File \"<console>\", line 1, in <module>",
+            "NameError: name 'y' is not defined",
+        ] {
+            v.push(l.into());
+        }
+        assert_eq!(v.blocks(), [1..6, 7..10]);
+        assert!(v.last_block().unwrap().starts_with("Traceback"));
+        assert!(v.block_at(3).unwrap().ends_with("does not exist"));
+        assert_eq!(v.block_at(0), None);
+        v.errors_only = true;
+        assert_eq!(v.visible().len(), 8);
+        assert_eq!(v.visible_indexed()[4].0, 5);
+    }
 
     #[test]
     fn odoo_levels() {

@@ -6,6 +6,7 @@
 
 pub mod ai;
 pub mod app;
+pub mod clip;
 pub mod config;
 pub mod exec;
 pub mod form;

@@ -7,7 +7,7 @@ use crate::{
     config::Profile,
     exec::{self, Input, Stop},
     jobs::Tx,
-    log::{self, Level},
+    log,
     odoo::{modules, pg},
 };
 
@@ -150,38 +150,16 @@ pub async fn sql(p: &Profile, db: &str, sql: &str, write: bool, limit: usize) ->
 
 /// Resumen de un log para una IA: cada error con su traceback y el final.
 pub fn digest(lines: &[String], tail: usize) -> String {
-    let starts_entry = |l: &str| l.len() > 4 && l.as_bytes()[..4].iter().all(u8::is_ascii_digit);
     let mut out: Vec<String> = vec![];
-    let mut i = 0;
-    let mut budget = 200;
-    while i < lines.len() && budget > 0 {
-        let l = &lines[i];
-        if matches!(log::level(l), Level::Error) && !l.starts_with('✗') {
-            out.push(l.clone());
-            budget -= 1;
-            // Traceback de Python: «Traceback…», líneas con sangría y la
-            // excepción final. Lo demás sin fecha (p. ej. de psql) no cuenta.
-            let mut j = i + 1;
-            let mut tb = false;
-            while j < lines.len() && !starts_entry(&lines[j]) && j - i <= 40 && budget > 0 {
-                let l = &lines[j];
-                let indented = l.starts_with(' ');
-                if !(l.starts_with("Traceback") || tb) {
-                    break;
-                }
-                tb = true;
-                out.push(l.clone());
-                budget -= 1;
-                j += 1;
-                if !indented && !l.starts_with("Traceback") {
-                    break;
-                }
-            }
-            out.push(String::new());
-            i = j;
-        } else {
-            i += 1;
+    let mut budget = 200usize;
+    for r in log::error_blocks(lines) {
+        if budget == 0 {
+            break;
         }
+        let take = r.len().min(budget);
+        out.extend(lines[r.start..r.start + take].iter().cloned());
+        out.push(String::new());
+        budget -= take;
     }
     let mut s = String::new();
     if !out.is_empty() {

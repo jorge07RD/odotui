@@ -69,6 +69,10 @@ pub struct Profile {
     /// Carpeta de addons propios tal como la ve Odoo (para `scaffold`).
     #[serde(default, skip_serializing_if = "is_empty")]
     pub addons_dir: String,
+    /// La misma carpeta en esta máquina (el bind mount en docker); vacío en
+    /// local = `addons_dir`. Sirve para leer los `__manifest__.py`.
+    #[serde(default, skip_serializing_if = "is_empty")]
+    pub addons_host_dir: String,
 }
 
 impl Default for Profile {
@@ -89,6 +93,7 @@ impl Default for Profile {
             python: String::new(),
             odoo_conf: String::new(),
             addons_dir: String::new(),
+            addons_host_dir: String::new(),
         }
     }
 }
@@ -103,6 +108,15 @@ impl Profile {
             "http://localhost:8069"
         } else {
             &self.odoo_url
+        }
+    }
+
+    /// Dónde leer los addons propios en esta máquina.
+    pub fn addons_host(&self) -> &str {
+        if !self.addons_host_dir.is_empty() || self.is_docker() {
+            &self.addons_host_dir
+        } else {
+            &self.addons_dir
         }
     }
 

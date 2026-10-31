@@ -167,12 +167,28 @@ impl Spec {
     }
 
     pub fn command(&self, stdin: bool) -> Command {
+        let mut cmd = Command::from(self.build(if stdin { "-i" } else { "" }));
+        cmd.stdin(if stdin { Stdio::piped() } else { Stdio::null() })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        cmd
+    }
+
+    /// Para usarlo a mano (`odoo shell`, `psql`): hereda la terminal y en
+    /// docker va con `-it`.
+    pub fn interactive(&self) -> std::process::Command {
+        self.build("-it")
+    }
+
+    /// `docker exec <flags>` en el contenedor, o el programa en esta máquina.
+    fn build(&self, exec_flags: &str) -> std::process::Command {
         let mut cmd = match &self.container {
             Some(c) => {
-                let mut cmd = Command::new("docker");
+                let mut cmd = std::process::Command::new("docker");
                 cmd.arg("exec");
-                if stdin {
-                    cmd.arg("-i");
+                if !exec_flags.is_empty() {
+                    cmd.arg(exec_flags);
                 }
                 if let Some(u) = &self.user {
                     cmd.args(["-u", u]);
@@ -184,16 +200,12 @@ impl Spec {
                 cmd
             }
             None => {
-                let mut cmd = Command::new(&self.program);
+                let mut cmd = std::process::Command::new(&self.program);
                 cmd.args(&self.args);
                 cmd
             }
         };
-        cmd.envs(self.envs.iter().map(|(k, v)| (k, v)))
-            .stdin(if stdin { Stdio::piped() } else { Stdio::null() })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        cmd.envs(self.envs.iter().map(|(k, v)| (k, v)));
         cmd
     }
 
@@ -479,6 +491,17 @@ mod tests {
         );
         assert!(!s.display().contains("secreto"));
         assert_eq!(s.display(), "docker exec db1 psql -d 'x y'");
+    }
+
+    #[test]
+    fn interactive_uses_a_tty() {
+        let s = Spec::new("odoo").arg("shell").inside("web");
+        let args: Vec<_> = s
+            .interactive()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["exec", "-it", "web", "odoo", "shell"]);
     }
 
     #[test]

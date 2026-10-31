@@ -49,11 +49,23 @@ pub struct Confirm {
 
 pub enum Pending {
     DropDb(String),
+    /// (bd, módulos)
+    Uninstall(String, Vec<String>),
     Restore(Box<Request>),
     DeleteProfile(usize),
     RestartInstance,
     Quit,
 }
+
+/// Lo que necesita la terminal entera: lo hace el bucle principal, fuera de
+/// la interfaz (patrón de tuisentry).
+pub enum Effect {
+    /// Un programa interactivo (`odoo shell`, `psql`) con la terminal heredada.
+    Interactive { spec: Spec, label: String },
+}
+
+/// Tareas más largas que esto avisan al escritorio al terminar.
+const NOTIFY_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// El trabajo de escritura en curso (solo uno a la vez).
 pub struct Busy {
@@ -141,6 +153,8 @@ pub struct App {
     /// La TUI atiende a la IA por el socket.
     pub ai_listening: bool,
     pub history: Vec<Entry>,
+    /// Para el bucle principal (se vacía en cada vuelta).
+    pub effects: Vec<Effect>,
 }
 
 impl App {
@@ -208,6 +222,7 @@ impl App {
             ai_seen: None,
             ai_listening: false,
             history: history::load(),
+            effects: vec![],
         }
     }
 
@@ -243,13 +258,18 @@ impl App {
             db("postgres", None),
         ];
         app.mod_db = Some("acme_prod".into());
-        let m = |name: &str, state: &str| ModuleInfo {
+        let m = |name: &str, state: &str, disk: Option<&str>| ModuleInfo {
             name: name.into(),
             state: state.into(),
             version: "17.0.1.0".into(),
             application: false,
+            disk: disk.map(String::from),
         };
-        app.modules = vec![m("base", "installed"), m("sale", "installed")];
+        app.modules = vec![
+            m("acme_ventas", "installed", Some("17.0.1.1")),
+            m("base", "installed", None),
+            m("sale", "installed", None),
+        ];
         app.backups = vec![Backup {
             name: "acme_prod_2025-10-30.zip".into(),
             kind: restore::Kind::Zip,
@@ -359,7 +379,9 @@ impl App {
         (0..self.modules.len())
             .filter(|&i| {
                 let m = &self.modules[i];
-                self.mod_list.matches(&format!("{} {}", m.name, m.state))
+                let changed = if m.changed() { " cambió" } else { "" };
+                self.mod_list
+                    .matches(&format!("{} {}{changed}", m.name, m.state))
             })
             .collect()
     }
@@ -599,6 +621,12 @@ impl App {
         let first = first_line(&r);
         let mark = if r.is_ok() { "✓" } else { "✗" };
         let ai = if from_ai { "IA: " } else { "" };
+        if busy
+            .as_ref()
+            .is_some_and(|b| b.started.elapsed() > NOTIFY_AFTER)
+        {
+            crate::clip::notify("odotui", &format!("{mark} {ai}{first}"));
+        }
         self.log_mut(sink).push(format!("{mark} {ai}{first}"));
         self.toast(format!("{mark} {ai}{first}"));
         if let Some(tx) = reply {
@@ -733,6 +761,12 @@ impl App {
             Action::Filter(p) => {
                 self.focus = p;
                 self.filtering = Some(p);
+            }
+            Action::LogLine(pane, i) => {
+                self.focus = pane;
+                if let Some(text) = self.pane_log(pane).and_then(|l| l.block_at(i)) {
+                    self.copy_error(&text);
+                }
             }
             Action::Cmd(c) => self.cmd(c),
             Action::Help => self.help = !self.help,
@@ -900,6 +934,50 @@ impl App {
                     self.form = Some(Form::neutralize(&db.name));
                 }
             }
+            Cmd::DbShell | Cmd::DbPsql => {
+                let Some(db) = self.selected_db().cloned() else {
+                    return;
+                };
+                let spec = if c == Cmd::DbShell {
+                    if db.version.is_none() {
+                        return self.toast("no es una BD de Odoo");
+                    }
+                    modules::odoo_sub(&p, Some("shell"))
+                        .map(|s| s.args(["-d", &db.name, "--no-http"]))
+                } else {
+                    Ok(pg::psql(&p, &db.name))
+                };
+                match spec {
+                    Ok(spec) => self.effects.push(Effect::Interactive {
+                        spec,
+                        label: format!(
+                            "{} en «{}»",
+                            if c == Cmd::DbShell {
+                                "odoo shell"
+                            } else {
+                                "psql"
+                            },
+                            db.name
+                        ),
+                    }),
+                    Err(e) => self.toast(format!("✗ {e}")),
+                }
+            }
+            Cmd::CopyError => {
+                let last = self.pane_log(self.focus_log()).and_then(|l| l.last_block());
+                match last {
+                    Some(text) => self.copy_error(&text),
+                    None => self.toast("no hay errores en el log"),
+                }
+            }
+            Cmd::ErrorsOnly => {
+                if let Some(l) = self.pane_log(self.focus_log()) {
+                    l.errors_only = !l.errors_only;
+                    l.follow = true;
+                    let on = l.errors_only;
+                    self.toast(if on { "solo errores" } else { "todo el log" });
+                }
+            }
             Cmd::DbBackup => {
                 if let Some(db) = self.selected_db() {
                     self.form = Some(Form::backup(&db.name));
@@ -977,32 +1055,44 @@ impl App {
             }
             Cmd::ModToggle => self.toggle_mark(),
             Cmd::ModClear => self.marks.clear(),
-            Cmd::ModInstall | Cmd::ModUpdate => {
+            Cmd::ModUpdateChanged => {
+                let names: Vec<String> = self
+                    .modules
+                    .iter()
+                    .filter(|m| m.changed())
+                    .map(|m| m.name.clone())
+                    .collect();
+                if names.is_empty() {
+                    return self.toast(if p.addons_host().is_empty() {
+                        "configura «Addons en el host» en el perfil para ver los cambios"
+                    } else {
+                        "ningún addon propio cambió"
+                    });
+                }
+                self.run_modules(&p, false, names);
+            }
+            Cmd::ModUninstall => {
                 let Some(db) = self.mod_db.clone() else {
                     return self.toast("elige una BD");
                 };
-                let mut names: Vec<String> = self.marks.iter().cloned().collect();
-                if names.is_empty()
-                    && let Some(m) = self.selected_module()
-                {
-                    names.push(m.name.clone());
-                }
+                let names = self.picked_modules();
                 if names.is_empty() {
                     return self.toast("marca algún módulo (Espacio)");
                 }
-                let install = c == Cmd::ModInstall;
-                self.mod_log.clear();
-                self.focus = Pane::ModLog;
-                let verb = if install {
-                    "instalando"
-                } else {
-                    "actualizando"
-                };
-                self.spawn_busy(Sink::Modules, format!("{verb} {}", names.join(",")), {
-                    move |tx, cancel| async move {
-                        modules::run(&p, &db, install, &names, &tx, &cancel).await
-                    }
+                self.confirm = Some(Confirm {
+                    message: format!(
+                        "Se desinstalará {} de «{db}», con sus datos y vistas. ¿Seguir?",
+                        names.join(", ")
+                    ),
+                    then: Pending::Uninstall(db, names),
                 });
+            }
+            Cmd::ModInstall | Cmd::ModUpdate => {
+                let names = self.picked_modules();
+                if names.is_empty() {
+                    return self.toast("marca algún módulo (Espacio)");
+                }
+                self.run_modules(&p, c == Cmd::ModInstall, names);
             }
             Cmd::ProfNew => {
                 self.form = Some(Form::profile(None, &Profile::default()));
@@ -1039,6 +1129,45 @@ impl App {
                     move |tx, _| async move { test_profile(&pr, &tx).await }
                 });
             }
+        }
+    }
+
+    /// Los marcados o, si no hay, el seleccionado.
+    fn picked_modules(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.marks.iter().cloned().collect();
+        if names.is_empty()
+            && let Some(m) = self.selected_module()
+        {
+            names.push(m.name.clone());
+        }
+        names
+    }
+
+    /// `-i` o `-u` de esos módulos en la BD de la pestaña.
+    fn run_modules(&mut self, p: &Profile, install: bool, names: Vec<String>) {
+        let Some(db) = self.mod_db.clone() else {
+            return self.toast("elige una BD");
+        };
+        self.mod_log.clear();
+        self.focus = Pane::ModLog;
+        let verb = if install {
+            "instalando"
+        } else {
+            "actualizando"
+        };
+        let p = p.clone();
+        self.spawn_busy(Sink::Modules, format!("{verb} {}", names.join(",")), {
+            move |tx, cancel| async move {
+                modules::run(&p, &db, install, &names, &tx, &cancel).await
+            }
+        });
+    }
+
+    fn copy_error(&mut self, text: &str) {
+        let n = text.lines().count();
+        match crate::clip::copy(text) {
+            Ok(()) => self.toast(format!("⧉ error copiado ({n} línea(s))")),
+            Err(e) => self.toast(format!("✗ no pude copiar: {e}")),
         }
     }
 
@@ -1299,6 +1428,22 @@ impl App {
                 });
             }
             Pending::Restore(req) => self.start_restore(*req),
+            Pending::Uninstall(db, names) => {
+                let Some(p) = self.current().cloned() else {
+                    return;
+                };
+                self.mod_log.clear();
+                self.focus = Pane::ModLog;
+                self.spawn_busy(
+                    Sink::Modules,
+                    format!("desinstalando {}", names.join(",")),
+                    {
+                        move |tx, cancel| async move {
+                            modules::uninstall(&p, &db, &names, &tx, &cancel).await
+                        }
+                    },
+                );
+            }
             Pending::DeleteProfile(i) => {
                 if i >= self.cfg.profiles.len() {
                     return;
@@ -1542,6 +1687,8 @@ impl App {
             ("BDs: neutralizar la seleccionada", Cmd::DbNeutralize),
             ("BDs: borrar la seleccionada", Cmd::DbDrop),
             ("BDs: backup de la seleccionada…", Cmd::DbBackup),
+            ("BDs: odoo shell en la seleccionada", Cmd::DbShell),
+            ("BDs: psql en la seleccionada", Cmd::DbPsql),
             (
                 "BDs: restaurar un backup sobre la seleccionada",
                 Cmd::DbRestoreHere,
@@ -1556,12 +1703,19 @@ impl App {
             ("Instancia: abrir en el navegador", Cmd::InstOpen),
             ("Módulos: instalar marcados", Cmd::ModInstall),
             ("Módulos: actualizar marcados", Cmd::ModUpdate),
+            (
+                "Módulos: actualizar los addons que cambiaron",
+                Cmd::ModUpdateChanged,
+            ),
+            ("Módulos: desinstalar marcados", Cmd::ModUninstall),
             ("Módulos: desmarcar todo", Cmd::ModClear),
             ("Perfiles: nuevo", Cmd::ProfNew),
             ("Perfiles: editar seleccionado", Cmd::ProfEdit),
             ("Perfiles: probar conexión", Cmd::ProfTest),
             ("Log: seguir el final on/off", Cmd::Follow),
             ("Log: limpiar", Cmd::ClearLog),
+            ("Log: copiar el último error", Cmd::CopyError),
+            ("Log: solo errores on/off", Cmd::ErrorsOnly),
         ];
         all.extend(cmds.iter().map(|(l, c)| (l.to_string(), Action::Cmd(*c))));
         for (i, p) in self.cfg.profiles.iter().enumerate() {
@@ -1740,6 +1894,8 @@ impl App {
                 Cmd::Follow
             }
             (_, KeyCode::Char('C')) => Cmd::ClearLog,
+            (t, KeyCode::Char('y')) if t != Tab::Profiles => Cmd::CopyError,
+            (t, KeyCode::Char('e')) if t != Tab::Profiles => Cmd::ErrorsOnly,
             (Tab::Dbs, KeyCode::Char('r')) => Cmd::Refresh,
             (Tab::Dbs, KeyCode::Char('d')) => Cmd::DbDrop,
             (Tab::Dbs, KeyCode::Char('c')) => Cmd::DbDuplicate,
@@ -1748,6 +1904,8 @@ impl App {
             (Tab::Dbs, KeyCode::Char('s')) => Cmd::DbRestoreHere,
             (Tab::Dbs, KeyCode::Char('m')) => Cmd::DbModules,
             (Tab::Dbs, KeyCode::Char('b')) => Cmd::DbBackup,
+            (Tab::Dbs, KeyCode::Char('S')) => Cmd::DbShell,
+            (Tab::Dbs, KeyCode::Char('P')) => Cmd::DbPsql,
             (Tab::Restore, KeyCode::Char('r')) => Cmd::Refresh,
             (Tab::Restore, KeyCode::Char('R')) => Cmd::Restore,
             (Tab::Instance, KeyCode::Char('s')) => Cmd::InstStart,
@@ -1761,6 +1919,8 @@ impl App {
             (Tab::Modules, KeyCode::Char(' ')) => Cmd::ModToggle,
             (Tab::Modules, KeyCode::Char('i')) => Cmd::ModInstall,
             (Tab::Modules, KeyCode::Char('u')) => Cmd::ModUpdate,
+            (Tab::Modules, KeyCode::Char('U')) => Cmd::ModUpdateChanged,
+            (Tab::Modules, KeyCode::Char('d')) => Cmd::ModUninstall,
             (Tab::Modules, KeyCode::Char('x')) => Cmd::ModClear,
             (Tab::Modules, KeyCode::Char('b')) => Cmd::ModDb(1),
             (Tab::Modules, KeyCode::Char('B')) => Cmd::ModDb(-1),

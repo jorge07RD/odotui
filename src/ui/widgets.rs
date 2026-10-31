@@ -374,16 +374,23 @@ pub fn log_view(
     hits: &mut HitMap,
 ) {
     let t = &app.theme;
-    let lines = log.visible();
+    let lines = log.visible_indexed();
     let h = area.height as usize;
     let max = lines.len().saturating_sub(h);
     let offset = if log.follow { max } else { log.offset.min(max) };
     hits.scroll(area, pane, max, h);
     if lines.is_empty() {
+        let empty = if log.errors_only {
+            " sin errores (e muestra todo)"
+        } else {
+            empty
+        };
         f.render_widget(Line::styled(empty, Style::new().fg(t.dim).italic()), area);
         return;
     }
-    for (k, line) in lines.iter().skip(offset).take(h).enumerate() {
+    // Las líneas de un error (con su traceback) se copian con un clic.
+    let blocks = log.blocks();
+    for (k, (i, line)) in lines.iter().skip(offset).take(h).enumerate() {
         let r = Rect::new(area.x, area.y + k as u16, area.width, 1);
         let level = log::level(line);
         if level == Level::Error {
@@ -392,6 +399,9 @@ pub fn log_view(
         }
         let style = level_style(app, level);
         f.render_widget(Line::styled(truncate(line, area.width as usize), style), r);
+        if blocks.iter().any(|b| b.contains(i)) {
+            hits.push(r, Action::LogLine(pane, *i));
+        }
     }
     // Indicador de si se sigue el final; tocarlo alterna.
     let (label, color) = if log.follow {
@@ -413,6 +423,23 @@ pub fn log_view(
         let r = Rect::new(area.right() - w, area.bottom() - 1, w, 1);
         f.render_widget(Line::from(spans), r);
         hits.push(r, Action::Cmd(crate::input::Cmd::Follow));
+        if log.errors_only {
+            let spans = pill(
+                vec![Span::styled(
+                    "✗ solo errores",
+                    Style::new().fg(t.err).bold(),
+                )],
+                t.surface,
+                None,
+                app,
+            );
+            let ew = spans_width(&spans);
+            if r.x > area.x + ew + 1 {
+                let er = Rect::new(r.x - ew - 1, r.y, ew, 1);
+                f.render_widget(Line::from(spans), er);
+                hits.push(er, Action::Cmd(crate::input::Cmd::ErrorsOnly));
+            }
+        }
     }
 }
 

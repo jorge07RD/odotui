@@ -128,12 +128,60 @@ fn modules_have_a_separate_checkbox() {
     app.tab = Tab::Modules;
     app.focus = Pane::ModList;
     let buf = render(&mut app);
-    let (x, y) = find(&buf, "sale", None).unwrap();
-    assert_eq!(app.hits.at(x, y), Some(Action::Row(Pane::ModList, 1)));
+    let (x, y) = find(&buf, " sale ", None).unwrap();
+    assert_eq!(app.hits.at(x + 1, y), Some(Action::Row(Pane::ModList, 2)));
     let (cx, cy) = find(&buf, "[ ]", Some(y)).unwrap();
-    assert_eq!(app.hits.at(cx, cy), Some(Action::Toggle(Pane::ModList, 1)));
+    assert_eq!(app.hits.at(cx, cy), Some(Action::Toggle(Pane::ModList, 2)));
     click(&mut app, cx, cy);
     assert!(app.marks.contains("sale"));
+}
+
+#[test]
+fn changed_addons_are_marked_and_updatable() {
+    let mut app = App::for_tests();
+    app.tab = Tab::Modules;
+    let buf = render(&mut app);
+    let (_, y) = find(&buf, "acme_ventas", None).unwrap();
+    assert!(find(&buf, "cambió", Some(y)).is_some());
+    assert!(find(&buf, "→ 17.0.1.1", Some(y)).is_some());
+    assert_eq!(
+        hit(&app, &buf, "Cambiados (1)", None),
+        Some(Action::Cmd(Cmd::ModUpdateChanged))
+    );
+    // Visible aunque la barra se llene.
+    assert!(find(&buf, "Cancelar", Some(1)).is_some());
+}
+
+#[test]
+fn clicking_an_error_line_targets_its_block() {
+    let mut app = App::for_tests();
+    app.tab = Tab::Instance;
+    app.focus = Pane::InstanceLog;
+    for l in [
+        "2025-01-01 10:00:00,000 1 INFO db odoo: inicio",
+        "2025-01-01 10:00:01,000 1 ERROR db odoo.http: falló",
+        "Traceback (most recent call last):",
+        "  File \"/x.py\", line 3, in f",
+        "ValueError: malo",
+    ] {
+        app.inst_log.push(l.into());
+    }
+    let buf = render(&mut app);
+    assert_eq!(
+        hit(&app, &buf, "ValueError: malo", None),
+        Some(Action::LogLine(Pane::InstanceLog, 4))
+    );
+    // Una línea normal no copia nada: sigue siendo el panel.
+    assert_eq!(
+        hit(&app, &buf, "odoo: inicio", None),
+        Some(Action::Focus(Pane::InstanceLog))
+    );
+    assert!(
+        app.inst_log
+            .block_at(4)
+            .unwrap()
+            .starts_with("2025-01-01 10:00:01")
+    );
 }
 
 #[test]

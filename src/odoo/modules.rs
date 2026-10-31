@@ -7,15 +7,32 @@ use crate::{
     config::Profile,
     exec::{self, Spec, Stop},
     jobs::Tx,
-    odoo::pg,
+    odoo::{
+        addons::{self, Addon},
+        dev, pg, restore,
+    },
 };
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ModuleInfo {
     pub name: String,
     pub state: String,
     pub version: String,
     pub application: bool,
+    /// Versión del `__manifest__.py` en el disco (ya con la serie), si es un
+    /// addon propio.
+    pub disk: Option<String>,
+}
+
+impl ModuleInfo {
+    /// Instalado, pero el código en el disco es de otra versión: falta `-u`.
+    pub fn changed(&self) -> bool {
+        self.state == "installed"
+            && self
+                .disk
+                .as_deref()
+                .is_some_and(|d| !self.version.is_empty() && d != self.version)
+    }
 }
 
 pub async fn list(p: &Profile, db: &str) -> Result<Vec<ModuleInfo>> {
@@ -26,7 +43,7 @@ pub async fn list(p: &Profile, db: &str) -> Result<Vec<ModuleInfo>> {
          FROM ir_module_module ORDER BY name",
     )
     .await?;
-    Ok(rows
+    let mut mods: Vec<ModuleInfo> = rows
         .into_iter()
         .filter(|r| r.len() >= 4)
         .map(|r| ModuleInfo {
@@ -34,8 +51,76 @@ pub async fn list(p: &Profile, db: &str) -> Result<Vec<ModuleInfo>> {
             state: r[1].clone(),
             version: r[2].clone(),
             application: r[3] == "t",
+            disk: None,
         })
-        .collect())
+        .collect();
+    let dir = p.addons_host().to_string();
+    let found = tokio::task::spawn_blocking(move || addons::scan(&dir)).await?;
+    merge(&mut mods, &found);
+    Ok(mods)
+}
+
+/// Junta la BD con los addons del disco. Los que la BD no conoce todavía
+/// (sin «actualizar lista») aparecen como no instalados: `-i` los encuentra.
+pub fn merge(mods: &mut Vec<ModuleInfo>, found: &[Addon]) {
+    let serie = mods
+        .iter()
+        .find(|m| m.name == "base")
+        .map(|m| restore::major(&m.version))
+        .unwrap_or_default();
+    for a in found {
+        let disk = addons::adapt(a.version(), &serie);
+        match mods.iter_mut().find(|m| m.name == a.name) {
+            Some(m) => m.disk = Some(disk),
+            None => mods.push(ModuleInfo {
+                name: a.name.clone(),
+                state: "uninstalled".into(),
+                application: a.manifest.get("application") == Some(&serde_json::Value::Bool(true)),
+                disk: Some(disk),
+                ..Default::default()
+            }),
+        }
+    }
+    mods.sort_by(|a, b| a.name.cmp(&b.name));
+}
+
+/// Desinstala con el ORM (no hay opción de línea de comandos para esto).
+pub async fn uninstall(
+    p: &Profile,
+    db: &str,
+    names: &[String],
+    tx: &Tx,
+    cancel: &CancellationToken,
+) -> Result<String> {
+    if names.is_empty() {
+        bail!("no hay módulos marcados");
+    }
+    let list = names
+        .iter()
+        .map(|n| format!("{n:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let code = format!(
+        "mods = env['ir.module.module'].search([('name', 'in', [{list}]), ('state', 'in', ['installed', 'to upgrade'])])\n\
+         print('ODOTUI', ','.join(mods.mapped('name')) or '-')\n\
+         mods.button_immediate_uninstall()\n\
+         env.cr.commit()\n"
+    );
+    let (tx, lines) = tx.capturing();
+    dev::shell(p, db, &code, &tx, cancel).await?;
+    let lines = lines.lock().map(|l| l.clone()).unwrap_or_default();
+    let done = lines
+        .iter()
+        .find_map(|l| l.strip_prefix("ODOTUI "))
+        .unwrap_or("-")
+        .to_string();
+    if lines.iter().any(|l| l.starts_with("Traceback")) {
+        bail!("Odoo falló al desinstalar {done}");
+    }
+    if done == "-" {
+        bail!("ninguno de {} estaba instalado", names.join(","));
+    }
+    Ok(format!("{done} desinstalado(s)"))
 }
 
 /// El ejecutable de Odoo del perfil, ya apuntando a su Postgres.
@@ -134,6 +219,49 @@ pub async fn run(
 mod tests {
     use super::*;
     use crate::config::Mode;
+
+    #[test]
+    fn merge_marks_changed_and_new_addons() {
+        let m = |name: &str, state: &str, version: &str| ModuleInfo {
+            name: name.into(),
+            state: state.into(),
+            version: version.into(),
+            ..Default::default()
+        };
+        let mut mods = vec![
+            m("base", "installed", "17.0.1.3"),
+            m("acme", "installed", "17.0.1.0"),
+            m("viejo", "installed", "17.0.2.0"),
+        ];
+        let addon = |name: &str, version: &str| Addon {
+            name: name.into(),
+            path: name.into(),
+            manifest: serde_json::json!({"version": version}),
+        };
+        merge(
+            &mut mods,
+            &[
+                addon("acme", "1.1"),
+                addon("viejo", "17.0.2.0"),
+                addon("nuevo", "1.0"),
+            ],
+        );
+        let names: Vec<_> = mods
+            .iter()
+            .map(|m| (m.name.as_str(), m.changed()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("acme", true),
+                ("base", false),
+                ("nuevo", false),
+                ("viejo", false)
+            ]
+        );
+        assert_eq!(mods[0].disk.as_deref(), Some("17.0.1.1"));
+        assert_eq!(mods[2].state, "uninstalled");
+    }
 
     #[test]
     fn docker_odoo_gets_db_args() {

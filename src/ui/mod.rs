@@ -241,9 +241,10 @@ fn draw_footer(f: &mut Frame, row: Rect, app: &App, hits: &mut HitMap) {
     let hints: &[(&str, &str)] = match app.tab {
         Tab::Dbs => &[
             ("Enter", "módulos"),
+            ("S", "odoo shell"),
+            ("P", "psql"),
             ("/", "filtrar"),
             ("←→", "panel"),
-            ("2º clic", "abrir"),
         ],
         Tab::Restore => &[
             ("Enter", "restaurar"),
@@ -253,14 +254,16 @@ fn draw_footer(f: &mut Frame, row: Rect, app: &App, hits: &mut HitMap) {
         ],
         Tab::Instance => &[
             ("f", "seguir"),
+            ("e", "solo errores"),
+            ("y", "copiar error"),
             ("/", "filtrar"),
-            ("rueda", "scroll"),
             ("o", "abrir web"),
         ],
         Tab::Modules => &[
             ("Espacio", "marcar"),
             ("i", "instalar"),
             ("u", "actualizar"),
+            ("U", "cambiados"),
             ("b", "otra BD"),
         ],
         Tab::Profiles => &[
@@ -393,6 +396,7 @@ fn draw_help(f: &mut Frame, app: &App, hits: &mut HitMap) {
         item("botones", "cada uno muestra su tecla"),
         item("rueda/arrastre", "scroll de listas y logs"),
         item("⇣ siguiendo", "pausa o sigue el final del log"),
+        item("línea roja", "copia ese error con su traceback"),
         item("≡", "paleta de comandos"),
         item("◉ IA", "una IA está trabajando (odotui mcp)"),
         Line::raw(""),
@@ -404,6 +408,9 @@ fn draw_help(f: &mut Frame, app: &App, hits: &mut HitMap) {
         item("/  Esc", "filtrar · borrar filtro / cerrar"),
         item(":", "paleta de comandos (escribe para buscar)"),
         item("f  C", "seguir log · limpiar log"),
+        item("e  y", "solo errores · copiar el último error"),
+        item("S  P", "odoo shell · psql en la BD (BDs)"),
+        item("U  d", "actualizar cambiados · desinstalar (Módulos)"),
         item("X", "cancelar la tarea en curso"),
         item("q  Ctrl+C", "salir"),
         Line::raw(""),

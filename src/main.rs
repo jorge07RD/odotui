@@ -1,7 +1,15 @@
 //! odotui: herramientas de desarrollo para Odoo en la terminal, usables
 //! igual con el mouse que con el teclado.
 
-use std::{io::stdout, path::PathBuf, time::Duration};
+use std::{
+    io::stdout,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use anyhow::Result;
 use ratatui::crossterm::{
@@ -12,7 +20,15 @@ use ratatui::crossterm::{
 };
 use tokio::sync::mpsc;
 
-use odotui::{ai, app::App, config, config::Config, input::HitMap, ui};
+use odotui::{
+    ai,
+    app::{App, Effect},
+    config,
+    config::Config,
+    exec::Spec,
+    input::HitMap,
+    ui,
+};
 
 const USAGE: &str = "\
 odotui — herramientas de desarrollo para Odoo
@@ -80,10 +96,17 @@ async fn main() -> Result<()> {
         hook(info);
     }));
 
-    // crossterm bloquea al leer; un hilo aparte reenvía los eventos.
+    // crossterm bloquea al leer; un hilo aparte reenvía los eventos. `reading`
+    // lo pausa mientras otro programa (odoo shell, psql) usa la terminal.
+    let reading = Arc::new(AtomicBool::new(true));
     let (ev_tx, mut events) = mpsc::unbounded_channel();
+    let reader = reading.clone();
     std::thread::spawn(move || {
         loop {
+            if !reader.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
             match event::poll(Duration::from_millis(100)) {
                 Ok(true) => {
                     let Ok(ev) = event::read() else { break };
@@ -122,10 +145,73 @@ async fn main() -> Result<()> {
         if app.quit {
             break Ok(());
         }
+        for effect in std::mem::take(&mut app.effects) {
+            match effect {
+                Effect::Interactive { spec, label } => {
+                    let r = interactive(&spec, &label, &mut terminal, &reading).await;
+                    app.toast(match r {
+                        Ok(()) => format!("volviste de {label}"),
+                        Err(e) => format!("✗ {label}: {e:#}"),
+                    });
+                    // Lo llegado mientras tanto (teclas de la shell) no es para la TUI.
+                    while events.try_recv().is_ok() {}
+                }
+            }
+        }
     };
 
     execute!(stdout(), DisableMouseCapture, DisableBracketedPaste)?;
     ratatui::restore();
     drop(bridge);
     result
+}
+
+extern "C" fn ignore(_: libc::c_int) {}
+
+/// Suspende la TUI, corre `spec` con la terminal heredada y vuelve.
+async fn interactive(
+    spec: &Spec,
+    label: &str,
+    terminal: &mut ratatui::DefaultTerminal,
+    reading: &AtomicBool,
+) -> Result<()> {
+    reading.store(false, Ordering::Relaxed);
+    // Da tiempo al hilo lector a salir de su `poll`.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    execute!(stdout(), DisableMouseCapture, DisableBracketedPaste)?;
+    ratatui::restore();
+    println!("── {label} ── (sal con Ctrl+D o exit() para volver a odotui)\n");
+
+    // Ctrl+C es para el programa, no para odotui. Un manejador vacío (y no
+    // SIG_IGN) porque el hijo lo hereda como el de por defecto.
+    // SAFETY: sigaction con un manejador que no hace nada; se restaura después.
+    let old = unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = ignore as *const () as usize;
+        let mut old: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(libc::SIGINT, &sa, &mut old);
+        old
+    };
+    let status = tokio::process::Command::from(spec.interactive())
+        .status()
+        .await;
+    // SAFETY: vuelve el manejador que había.
+    unsafe { libc::sigaction(libc::SIGINT, &old, std::ptr::null_mut()) };
+
+    *terminal = ratatui::init();
+    execute!(stdout(), EnableMouseCapture, EnableBracketedPaste)?;
+    terminal.clear()?;
+    reading.store(true, Ordering::Relaxed);
+    let status = status.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            anyhow::anyhow!("no encontré `{}`", spec.program)
+        } else {
+            e.into()
+        }
+    })?;
+    // Salir de psql con un error de la última orden no es un fallo de odotui.
+    if !status.success() && status.code().is_none() {
+        anyhow::bail!("terminó con {status}");
+    }
+    Ok(())
 }

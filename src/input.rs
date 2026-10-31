@@ -84,6 +84,9 @@ pub enum Cmd {
     DbNeutralize,
     DbRestoreHere,
     DbBackup,
+    /// `odoo shell` interactivo sobre la BD seleccionada.
+    DbShell,
+    DbPsql,
     DbModules,
     Restore,
     InstStart,
@@ -97,7 +100,14 @@ pub enum Cmd {
     ModToggle,
     ModInstall,
     ModUpdate,
+    /// Actualiza los addons propios cuyo código cambió.
+    ModUpdateChanged,
+    ModUninstall,
     ModClear,
+    /// Copia el último error (con su traceback) del log.
+    CopyError,
+    /// Solo errores en el log, on/off.
+    ErrorsOnly,
     ProfNew,
     ProfEdit,
     ProfDelete,
@@ -117,6 +127,9 @@ pub enum Action {
     Toggle(Pane, usize),
     Focus(Pane),
     Filter(Pane),
+    /// Clic en una línea de error de un log (índice en el log completo):
+    /// copia su traceback.
+    LogLine(Pane, usize),
     Cmd(Cmd),
     Help,
     Palette,

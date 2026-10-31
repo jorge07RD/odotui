@@ -24,9 +24,8 @@ pub fn sink(tool: &str) -> Option<Sink> {
         | "rename_database"
         | "neutralize_database"
         | "backup_database" => Sink::Dbs,
-        "install_modules" | "update_modules" | "run_tests" | "odoo_shell" | "scaffold_module" => {
-            Sink::Modules
-        }
+        "install_modules" | "update_modules" | "uninstall_modules" | "run_tests" | "odoo_shell"
+        | "scaffold_module" => Sink::Modules,
         "instance" => Sink::Instance,
         _ => return None,
     })
@@ -224,6 +223,14 @@ pub fn definitions() -> Vec<Value> {
             &["database", "modules"],
             false,
             false,
+        ),
+        tool(
+            "uninstall_modules",
+            "Desinstala módulos de una BD (button_immediate_uninstall por el ORM). Borra sus datos, vistas y tablas: confírmalo con el usuario antes.",
+            json!({"database": db, "modules": mods}),
+            &["database", "modules"],
+            false,
+            true,
         ),
         tool(
             "run_tests",
@@ -514,6 +521,11 @@ async fn run(
             let names = list_arg(args, "modules")?;
             modules::run(p, &db, tool == "install_modules", &names, tx, cancel).await
         }
+        "uninstall_modules" => {
+            let db = db_arg(args, "database")?;
+            let names = list_arg(args, "modules")?;
+            modules::uninstall(p, &db, &names, tx, cancel).await
+        }
         "run_tests" => {
             let db = db_arg(args, "database")?;
             let names = list_arg(args, "modules")?;
@@ -614,7 +626,7 @@ mod tests {
     #[test]
     fn every_tool_has_schema_and_sink_rules() {
         let defs = definitions();
-        assert_eq!(defs.len(), 21);
+        assert_eq!(defs.len(), 22);
         for d in &defs {
             let name = d["name"].as_str().unwrap();
             assert!(d["inputSchema"]["type"] == "object", "{name}");

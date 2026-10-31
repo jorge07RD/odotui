@@ -22,6 +22,8 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     let idle = app.busy.is_none();
     let running = app.busy.as_ref().is_some_and(|b| b.sink == Sink::Modules);
     let any = !app.marks.is_empty() || app.selected_module().is_some();
+    let changed = app.modules.iter().filter(|m| m.changed()).count();
+    let changed_label = format!("Cambiados ({changed})");
     widgets::toolbar(
         f,
         bar,
@@ -29,10 +31,14 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
         &[
             Btn::new("i", "Instalar", Action::Cmd(Cmd::ModInstall)).enabled(idle && any),
             Btn::new("u", "Actualizar", Action::Cmd(Cmd::ModUpdate)).enabled(idle && any),
+            Btn::new("U", &changed_label, Action::Cmd(Cmd::ModUpdateChanged))
+                .enabled(idle && changed > 0),
+            Btn::new("d", "Desinstalar", Action::Cmd(Cmd::ModUninstall))
+                .enabled(idle && any)
+                .danger(),
             Btn::new("␣", "Marcar", Action::Cmd(Cmd::ModToggle)),
             Btn::new("x", "Desmarcar", Action::Cmd(Cmd::ModClear)).enabled(!app.marks.is_empty()),
             Btn::new("r", "Recargar", Action::Cmd(Cmd::Refresh)),
-            Btn::new("/", "Filtrar", Action::Filter(Pane::ModList)),
             Btn::new("X", "Cancelar", Action::Cmd(Cmd::Cancel))
                 .enabled(running)
                 .danger(),
@@ -71,7 +77,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
             inner,
         );
     } else {
-        let name_w = (inner.width as usize).saturating_sub(30).clamp(10, 50);
+        let name_w = (inner.width as usize).saturating_sub(32).clamp(10, 50);
         let [head, inner] =
             Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
         widgets::header(
@@ -79,7 +85,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
             head,
             app,
             format!(
-                "      {}{}{}",
+                "        {}{}{}",
                 cell("MÓDULO", name_w),
                 cell("ESTADO", 14),
                 "VERSIÓN"
@@ -90,7 +96,25 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
             .map(|&i| {
                 let m = &app.modules[i];
                 let on = app.marks.contains(&m.name);
+                let mark = if m.changed() {
+                    Span::styled("⟳ ", Style::new().fg(t.warn).bold())
+                } else if m.disk.is_some() {
+                    // Addon propio (está en addons_dir).
+                    Span::styled("◆ ", Style::new().fg(t.accent))
+                } else {
+                    Span::raw("  ")
+                };
+                let (state, version) = if m.changed() {
+                    (
+                        "cambió".to_string(),
+                        // La de la BD ya no importa: se ve la que se instalará.
+                        format!("→ {}", m.disk.as_deref().unwrap_or("")),
+                    )
+                } else {
+                    (m.state.clone(), m.version.clone())
+                };
                 let state_color = match m.state.as_str() {
+                    _ if m.changed() => t.warn,
                     "installed" => t.ok,
                     "to upgrade" | "to install" | "to remove" => t.warn,
                     "uninstallable" => t.err,
@@ -105,6 +129,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
                             Style::new().fg(t.dim)
                         },
                     ),
+                    mark,
                     Span::styled(
                         cell(&m.name, name_w),
                         if m.application {
@@ -113,8 +138,8 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
                             Style::new().fg(t.fg)
                         },
                     ),
-                    Span::styled(cell(&m.state, 14), state_color),
-                    Span::styled(m.version.clone(), t.dim),
+                    Span::styled(cell(&state, 14), state_color),
+                    Span::styled(version, t.dim),
                 ])
             })
             .collect();
@@ -201,10 +226,16 @@ fn db_selector(f: &mut Frame, row: Rect, app: &App, hits: &mut HitMap) {
     f.render_widget(Line::from(arrow("►", next)), next);
     hits.push(next, Action::Cmd(Cmd::ModDb(1)));
     let marks = app.marks.len();
+    let changed = app.modules.iter().filter(|m| m.changed()).count();
     let info = if marks > 0 {
         Span::styled(
             format!("   {marks} marcado(s)"),
             Style::new().fg(t.ok).bold(),
+        )
+    } else if changed > 0 {
+        Span::styled(
+            format!("   ⟳ {changed} addon(s) con código nuevo: U los actualiza"),
+            Style::new().fg(t.warn),
         )
     } else {
         Span::styled("   b / B cambia de BD", Style::new().fg(t.dim))
