@@ -207,6 +207,54 @@ impl App {
         }
     }
 
+    /// Con datos fijos para las pruebas de la interfaz: sin tareas, sin
+    /// historial y con un tema e íconos que no dependen del sistema.
+    #[cfg(test)]
+    pub fn for_tests() -> Self {
+        let (tx, _) = tokio::sync::mpsc::unbounded_channel();
+        let cfg = Config {
+            theme: Some("tokyonight".into()),
+            icons: Some(false),
+            profiles: vec![Profile {
+                name: "dev".into(),
+                mode: crate::config::Mode::Local,
+                pg_host: "localhost".into(),
+                odoo_bin: "/opt/odoo/odoo-bin".into(),
+                backups_dir: "/srv/backups".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut app = Self::new(cfg, PathBuf::from("/nonexistent/odotui.toml"), tx);
+        app.history.clear();
+        let db = |name: &str, version: Option<&str>| DbInfo {
+            name: name.into(),
+            size: 50 << 20,
+            owner: "odoo".into(),
+            version: version.map(String::from),
+        };
+        app.dbs = vec![
+            db("acme_prod", Some("17.0.1.3")),
+            db("acme_staging", Some("17.0.1.3")),
+            db("postgres", None),
+        ];
+        app.mod_db = Some("acme_prod".into());
+        let m = |name: &str, state: &str| ModuleInfo {
+            name: name.into(),
+            state: state.into(),
+            version: "17.0.1.0".into(),
+            application: false,
+        };
+        app.modules = vec![m("base", "installed"), m("sale", "installed")];
+        app.backups = vec![Backup {
+            name: "acme_prod_2025-10-30".into(),
+            dump: Some(1 << 20),
+            filestore: true,
+            modified: None,
+        }];
+        app
+    }
+
     /// Primera carga: sin perfiles se abre directamente el formulario.
     pub fn start(&mut self) {
         if self.cfg.profiles.is_empty() {

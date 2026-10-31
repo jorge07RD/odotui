@@ -186,9 +186,18 @@ backups_dir = "/home/yo/backups"
 ## 🛠️ Desarrollo
 
 ```bash
-cargo test                      # pruebas unitarias
+cargo test                      # pruebas unitarias y de la interfaz (TestBackend)
 cargo clippy --all-targets      # sin avisos
 cargo install --path . --locked # actualiza el binario
+
+# e2e contra un Postgres de verdad (en CI corre con un servicio postgres:16)
+ODOTUI_E2E_PG="host=127.0.0.1 port=5432 user=odoo password=odoo" cargo test --test e2e_pg
+
+# Odoo 17 real en docker y todas las herramientas MCP contra él
+docker compose -f dev/docker-compose.yml up -d
+cargo build && python3 scripts/mcp_smoke.py
 ```
 
-La interfaz sigue el patrón de [tuisentry](https://github.com/jorge07RD/tuisentry): cada clic, tecla o comando de la paleta es un `Action` que pasa por `App::apply`. Las áreas clicables se registran en un `HitMap` que se rehace en cada frame.
+`dev/odotui.toml` es el perfil de ese compose (`odotui -c dev/odotui.toml`) y `dev/addons/odotui_demo` un módulo mínimo con modelo, vistas y un test.
+
+La interfaz sigue el patrón de [tuisentry](https://github.com/jorge07RD/tuisentry): cada clic, tecla o comando de la paleta es un `Action` que pasa por `App::apply`. Las áreas clicables se registran en un `HitMap` que se rehace en cada frame; los tests de `src/ui/tests.rs` dibujan la app y comprueban que cada clic llegue a su `Action`.

@@ -8,6 +8,9 @@ mod profiles;
 mod restore;
 pub mod widgets;
 
+#[cfg(test)]
+mod tests;
+
 use std::time::Duration;
 
 use ratatui::{

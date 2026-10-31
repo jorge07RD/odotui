@@ -1,19 +1,6 @@
 //! odotui: herramientas de desarrollo para Odoo en la terminal, usables
 //! igual con el mouse que con el teclado.
 
-mod ai;
-mod app;
-mod config;
-mod exec;
-mod form;
-mod history;
-mod input;
-mod jobs;
-mod log;
-mod odoo;
-mod theme;
-mod ui;
-
 use std::{io::stdout, path::PathBuf, time::Duration};
 
 use anyhow::Result;
@@ -25,7 +12,7 @@ use ratatui::crossterm::{
 };
 use tokio::sync::mpsc;
 
-use crate::{app::App, config::Config, input::HitMap};
+use odotui::{ai, app::App, config, config::Config, input::HitMap, ui};
 
 const USAGE: &str = "\
 odotui — herramientas de desarrollo para Odoo

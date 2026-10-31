@@ -1,0 +1,26 @@
+<odoo>
+    <record id="nota_view_tree" model="ir.ui.view">
+        <field name="name">odotui.nota.tree</field>
+        <field name="model">odotui.nota</field>
+        <field name="arch" type="xml">
+            <tree>
+                <field name="name"/>
+                <field name="largo"/>
+            </tree>
+        </field>
+    </record>
+    <record id="nota_view_form" model="ir.ui.view">
+        <field name="name">odotui.nota.form</field>
+        <field name="model">odotui.nota</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <field name="name"/>
+                    <field name="partner_id"/>
+                    <field name="texto"/>
+                    <field name="largo"/>
+                </sheet>
+            </form>
+        </field>
+    </record>
+</odoo>

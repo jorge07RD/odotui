@@ -1,0 +1,17 @@
+# Perfil para dev/docker-compose.yml. Las rutas relativas son desde la raíz
+# del repositorio: lanza odotui desde ahí (odotui -c dev/odotui.toml).
+default_profile = "dev-compose"
+
+[[profile]]
+name = "dev-compose"
+mode = "docker"
+pg_host = "db"
+pg_port = 5432
+pg_user = "odoo"
+pg_password = "odoo"
+pg_container = "odotui-db"
+odoo_container = "odotui-odoo"
+odoo_url = "http://localhost:8069"
+backups_dir = "dev/backups"
+filestore_dir = "/var/lib/odoo/filestore"
+addons_dir = "/mnt/extra-addons"

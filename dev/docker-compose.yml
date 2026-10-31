@@ -1,0 +1,43 @@
+# Entorno real para probar odotui: Postgres 16 + Odoo 17.
+#
+#   docker compose -f dev/docker-compose.yml up -d
+#   odotui -c dev/odotui.toml            # o: python3 scripts/mcp_smoke.py
+#
+# Necesita docker sin sudo (tu usuario en el grupo docker).
+name: odotui-dev
+
+services:
+  db:
+    image: postgres:16
+    container_name: odotui-db
+    environment:
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo
+      POSTGRES_DB: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "odoo"]
+      interval: 5s
+      retries: 10
+
+  odoo:
+    image: odoo:17
+    container_name: odotui-odoo
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      HOST: db
+      USER: odoo
+      PASSWORD: odoo
+    ports:
+      - "8069:8069"
+    volumes:
+      - odoo-data:/var/lib/odoo
+      # Addons propios: se editan aquí y Odoo los ve en /mnt/extra-addons.
+      - ./addons:/mnt/extra-addons
+
+volumes:
+  pgdata:
+  odoo-data:

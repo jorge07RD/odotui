@@ -1,1 +1,4 @@
 /target
+/dev/backups/*
+!/dev/backups/.gitkeep
+__pycache__/
