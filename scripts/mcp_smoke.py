@@ -96,6 +96,16 @@ def main():
     if sock.exists() and not a.allow_tui:
         sys.exit(f"hay una TUI de odotui abierta ({sock}): las llamadas irían a ella. Ciérrala o usa --allow-tui.")
 
+    # Sin acceso a docker fallaría todo con «permission denied»: mejor decirlo ya.
+    if "docker" in Path(a.config).read_text() if Path(a.config).exists() else False:
+        r = subprocess.run(["docker", "ps"], capture_output=True, text=True)
+        if r.returncode != 0:
+            sys.exit(
+                "docker no responde para este usuario:\n  " + r.stderr.strip() +
+                "\nAñádete al grupo (sudo usermod -aG docker $USER) y vuelve a entrar, "
+                "o corre esto en una terminal tras `newgrp docker`."
+            )
+
     db, copy = a.db, a.db + "_copia"
     restored = a.db + "_restaurada"
     m = Mcp([a.bin, "mcp", "-c", a.config])
@@ -132,7 +142,8 @@ def main():
     step("list_modules", {"database": db, "filter": "odotui"}, expect="odotui_demo\tinstalled")
     step("odoo_shell", {"database": db, "code": "n = env['odotui.nota'].create({'name': 'smoke', 'texto': 'hola'}); env.cr.commit(); print('largo', n.largo)"}, expect="largo 4")
     step("sql_query", {"database": db, "sql": "SELECT name, largo FROM odotui_nota"}, expect="smoke")
-    step("sql_query", {"database": db, "sql": "DELETE FROM odotui_nota"}, error=True)
+    # Debe fallar justo por ser de solo lectura, no por otra cosa.
+    step("sql_query", {"database": db, "sql": "DELETE FROM odotui_nota"}, expect="read-only", error=True)
     step("run_tests", {"database": db, "modules": ["odotui_demo"]}, expect="OK")
     step("update_modules", {"database": db, "modules": ["odotui_demo"]})
     step("describe_model", {"database": db, "model": "odotui.nota"}, expect="largo")

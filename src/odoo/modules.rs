@@ -182,6 +182,22 @@ pub fn odoo_sub(p: &Profile, sub: Option<&str>) -> Result<Spec> {
     Ok(s)
 }
 
+/// Avisa en el log de lo que hará fallar a Odoo en los addons propios
+/// (p. ej. una licencia que no acepta), antes de que dé un error críptico.
+pub async fn warn_problems(p: &Profile, names: &[String], tx: &Tx) {
+    let dir = p.addons_host().to_string();
+    if dir.is_empty() {
+        return;
+    }
+    let names = names.to_vec();
+    if let Ok(found) = tokio::task::spawn_blocking(move || addons::problems_of(&dir, &names)).await
+    {
+        for problem in found {
+            tx.log(format!("⚠ {problem}"));
+        }
+    }
+}
+
 pub async fn run(
     p: &Profile,
     db: &str,
@@ -193,6 +209,7 @@ pub async fn run(
     if names.is_empty() {
         bail!("no hay módulos marcados");
     }
+    warn_problems(p, names, tx).await;
     let list = names.join(",");
     let spec = odoo(p)?.args([
         "-d",

@@ -35,6 +35,51 @@ impl Addon {
             })
             .unwrap_or_default()
     }
+
+    /// Lo que hará fallar a Odoo al instalar o actualizar, explicado. Odoo
+    /// solo lo detecta al escribir el módulo en la BD, con un error críptico
+    /// (`Wrong value for ir.module.module.license`).
+    pub fn problems(&self) -> Vec<String> {
+        let mut out = vec![];
+        if let Some(lic) = self.manifest.get("license").and_then(Value::as_str)
+            && !LICENSES.contains(&lic)
+        {
+            out.push(format!(
+                "licencia «{lic}» no válida para Odoo; usa una de: {}",
+                LICENSES.join(", ")
+            ));
+        }
+        out
+    }
+}
+
+/// Las que acepta `ir.module.module.license` (Odoo 14-18).
+pub const LICENSES: [&str; 10] = [
+    "GPL-2",
+    "GPL-2 or any later version",
+    "GPL-3",
+    "GPL-3 or any later version",
+    "AGPL-3",
+    "LGPL-3",
+    "Other OSI approved licence",
+    "OEEL-1",
+    "OPL-1",
+    "Other proprietary",
+];
+
+/// Problemas de los addons propios que están entre `names`, para avisar antes
+/// de lanzar `-i`/`-u`.
+pub fn problems_of(dir: &str, names: &[String]) -> Vec<String> {
+    scan(dir)
+        .into_iter()
+        .filter(|a| names.contains(&a.name))
+        .flat_map(|a| {
+            let name = a.name.clone();
+            a.problems()
+                .into_iter()
+                .map(move |p| format!("{name}: {p}"))
+        })
+        .collect()
 }
 
 /// Como `odoo.modules.module.adapt_version`: `1.0` → `17.0.1.0` en la serie 17.0.
@@ -247,6 +292,27 @@ Línea 'dos'
 """,
 }
 "#;
+
+    #[test]
+    fn flags_licenses_odoo_rejects() {
+        let ok = Addon {
+            name: "a".into(),
+            path: PathBuf::new(),
+            manifest: serde_json::json!({"license": "LGPL-3"}),
+        };
+        assert!(ok.problems().is_empty());
+        let mit = Addon {
+            manifest: serde_json::json!({"license": "MIT"}),
+            ..ok.clone()
+        };
+        assert!(mit.problems()[0].contains("«MIT»"));
+        // Sin licencia Odoo usa LGPL-3 por defecto: no es un problema.
+        let none = Addon {
+            manifest: serde_json::json!({}),
+            ..ok
+        };
+        assert!(none.problems().is_empty());
+    }
 
     #[test]
     fn reads_odoo_manifests() {

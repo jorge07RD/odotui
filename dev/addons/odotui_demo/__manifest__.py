@@ -7,5 +7,5 @@
         "security/ir.model.access.csv",
         "views/nota_views.xml",
     ],
-    "license": "MIT",
+    "license": "LGPL-3",
 }

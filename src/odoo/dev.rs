@@ -34,18 +34,9 @@ pub async fn run_tests(
     } else {
         tags.to_string()
     };
-    let spec = modules::odoo(p)?.args([
-        "-d",
-        db,
-        "-u",
-        &list,
-        "--test-enable",
-        "--test-tags",
-        &tags,
-        "--stop-after-init",
-        "--no-http",
-    ]);
+    let spec = tests_spec(p, db, &list, &tags)?;
     let (tx, lines) = tx.capturing();
+    modules::warn_problems(p, names, &tx).await;
     let r = exec::stream(&spec, None, &tx, cancel, Stop::Interrupt).await;
     if cancel.is_cancelled() {
         bail!("cancelado");
@@ -75,6 +66,29 @@ pub async fn run_tests(
         bail!("{text}");
     }
     Ok(text)
+}
+
+/// Puerto HTTP para los tests: con `--test-enable` Odoo levanta su servidor
+/// web (para los `HttpCase`) aunque se pida `--no-http`, y el 8069 suele
+/// estar ocupado por la instancia en marcha.
+fn test_port() -> u16 {
+    18069 + (std::process::id() % 1000) as u16
+}
+
+fn tests_spec(p: &Profile, db: &str, list: &str, tags: &str) -> Result<exec::Spec> {
+    let port = test_port().to_string();
+    Ok(modules::odoo(p)?.args([
+        "-d",
+        db,
+        "-u",
+        list,
+        "--test-enable",
+        "--test-tags",
+        tags,
+        "--stop-after-init",
+        "--http-port",
+        &port,
+    ]))
 }
 
 /// Ejecuta código Python con `env` del ORM. Odoo hace rollback al final:
@@ -179,6 +193,20 @@ pub fn digest(lines: &[String], tail: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tests_use_their_own_http_port() {
+        let p = Profile {
+            mode: crate::config::Mode::Docker,
+            odoo_container: "web".into(),
+            ..Default::default()
+        };
+        let s = tests_spec(&p, "db", "x", "/x").unwrap().display();
+        // Nada de --no-http: con tests Odoo abre HTTP igual y chocaría con el 8069.
+        assert!(!s.contains("--no-http"), "{s}");
+        let port: u16 = s.split("--http-port ").nth(1).unwrap().parse().unwrap();
+        assert!(port != 8069 && port >= 18069);
+    }
 
     #[test]
     fn module_names() {

@@ -325,6 +325,9 @@ pub async fn module_info(p: &Profile, name: &str, db: Option<&str>) -> Result<St
     if let Some(a) = addon {
         found = true;
         out += &format!("\nAddon propio en {}\n", a.path.display());
+        for problem in a.problems() {
+            out += &format!("  ⚠ {problem}\n");
+        }
         if let Some(v) = installed_version.filter(|v| !v.is_empty()) {
             let serie = crate::odoo::restore::major(&v);
             let disk = addons::adapt(a.version(), &serie);
