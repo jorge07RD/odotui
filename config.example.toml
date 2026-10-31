@@ -1,0 +1,34 @@
+# odotui — copia en ~/.config/odotui/config.toml (o créalos desde la pestaña Perfiles).
+
+# Tema: omarchy (sigue el del sistema), tokyonight, catppuccin, gruvbox.
+# theme = "omarchy"
+default_profile = "docker-17"
+
+# Odoo y Postgres en docker compose.
+[[profile]]
+name = "docker-17"
+mode = "docker"
+pg_host = "db"                     # host de Postgres visto desde Odoo
+pg_port = 5432
+pg_user = "odoo"
+pg_password = "odoo"
+pg_container = "odoo17-db-1"       # psql corre aquí dentro
+odoo_container = "odoo17-web-1"
+odoo_url = "http://localhost:8069"
+backups_dir = "/home/usuario/backups"       # carpetas <nombre>/dump.sql (+ filestore/) en el host
+filestore_dir = "/var/lib/odoo/filestore"   # dentro del contenedor de Odoo
+
+# Odoo desde el código fuente y Postgres del sistema.
+[[profile]]
+name = "local-17"
+mode = "local"
+pg_host = "localhost"
+pg_port = 5432
+pg_user = "odoo"
+pg_password = "odoo"
+odoo_bin = "/home/usuario/odoo17/odoo-bin"
+python = "/home/usuario/odoo17/.venv/bin/python"
+odoo_conf = "/home/usuario/odoo17/odoo.conf"
+odoo_url = "http://localhost:8069"
+backups_dir = "/home/usuario/backups"
+filestore_dir = "/home/usuario/.local/share/Odoo/filestore"
