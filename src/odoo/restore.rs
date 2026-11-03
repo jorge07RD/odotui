@@ -18,7 +18,7 @@ use zip::{CompressionMethod, ZipArchive};
 
 use crate::{
     config::Profile,
-    exec::{self, Counted, Input, Meter, Stop},
+    exec::{self, Counted, Input, Meter, Output, Stop},
     jobs::Tx,
     odoo::{filestore, neutralize, pg},
 };
@@ -345,9 +345,10 @@ pub async fn run(req: Request, tx: &Tx, cancel: &CancellationToken) -> Result<St
     pg::create(p, &req.db).await?;
     tx.log(format!("BD «{}» creada", req.db));
 
-    // Los resultados (p. ej. los `setval`) no interesan; errores y avisos
-    // siguen saliendo por stderr.
-    let psql = || pg::psql(p, &req.db).args(["-q", "-o", "/dev/null"]);
+    // Como RDO: lo que imprime psql (`CREATE TABLE`, `COPY 1532`…) va al log
+    // para ver el avance; `-tA` y `Output::Psql` quitan los resultados de los
+    // `setval`. Errores y avisos salen por stderr.
+    let psql = || pg::psql(p, &req.db).arg("-tA");
     let (spec, input, what) = match kind {
         Kind::Folder | Kind::Sql => (
             psql(),
@@ -374,7 +375,12 @@ pub async fn run(req: Request, tx: &Tx, cancel: &CancellationToken) -> Result<St
             )
         }
         Kind::PgCustom => (
-            pg::client(p, "pg_restore", &["--no-owner", "--no-privileges"]).args(["-d", &req.db]),
+            pg::client(
+                p,
+                "pg_restore",
+                &["--no-owner", "--no-privileges", "--verbose"],
+            )
+            .args(["-d", &req.db]),
             Input::File(dump.clone()),
             format!("pg_restore de {} ({})", req.backup, human(size)),
         ),
@@ -384,7 +390,7 @@ pub async fn run(req: Request, tx: &Tx, cancel: &CancellationToken) -> Result<St
     // Sin ON_ERROR_STOP, igual que Odoo: un dump trae errores inocuos
     // (p. ej. COMMENT ON EXTENSION sin ser superusuario).
     let (ltx, lines) = tx.capturing();
-    let r = exec::stream(&spec, Some(input), &ltx, cancel, Stop::Kill).await;
+    let r = exec::stream_to(&spec, Some(input), Output::Psql, &ltx, cancel, Stop::Kill).await;
     // Errores que no indican nada roto (p. ej. un pg_dump más nuevo que el
     // servidor escribe parámetros que este no conoce).
     let harmless = lines

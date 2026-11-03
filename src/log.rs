@@ -2,7 +2,8 @@
 
 use std::{collections::VecDeque, ops::Range};
 
-const MAX_LINES: usize = 5000;
+/// Un dump de Odoo saca ~20 000 líneas de psql al restaurarlo; caben enteras.
+const MAX_LINES: usize = 50_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
