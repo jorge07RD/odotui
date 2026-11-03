@@ -167,6 +167,8 @@ pub struct App {
     pub ai_seen: Option<Instant>,
     /// La TUI atiende a la IA por el socket.
     pub ai_listening: bool,
+    /// Cuándo empezó la animación de entrada; `None` = ya terminó (o no hay).
+    pub intro: Option<Instant>,
     pub history: Vec<Entry>,
     /// Para el bucle principal (se vacía en cada vuelta).
     pub effects: Vec<Effect>,
@@ -176,6 +178,7 @@ impl App {
     pub fn new(cfg: Config, cfg_path: PathBuf, tx: UnboundedSender<Ev>) -> Self {
         let theme = Theme::by_name(cfg.theme.as_deref());
         let profile = cfg.default_index();
+        let intro = cfg.intro.unwrap_or(true).then(Instant::now);
         Self {
             theme,
             glyphs: if cfg.icons.unwrap_or(true) {
@@ -239,6 +242,7 @@ impl App {
             prof_log: LogView::default(),
             ai_seen: None,
             ai_listening: false,
+            intro,
             history: history::load(),
             effects: vec![],
         }
@@ -264,6 +268,7 @@ impl App {
         };
         let mut app = Self::new(cfg, PathBuf::from("/nonexistent/odotui.toml"), tx);
         app.history.clear();
+        app.intro = None;
         let db = |name: &str, version: Option<&str>| DbInfo {
             name: name.into(),
             size: 50 << 20,
@@ -1954,7 +1959,29 @@ impl App {
         }
     }
 
+    /// Cuánto lleva la animación de entrada, si sigue en curso.
+    pub fn intro_elapsed(&self) -> Option<std::time::Duration> {
+        let e = self.intro?.elapsed();
+        (e < crate::ui::intro::TOTAL).then_some(e)
+    }
+
+    /// Hay que redibujar a ritmo de animación.
+    pub fn animating(&mut self) -> bool {
+        if self.intro_elapsed().is_none() {
+            self.intro = None;
+        }
+        self.intro.is_some()
+    }
+
     fn on_key(&mut self, k: KeyEvent) {
+        // Una tecla durante la animación solo la salta.
+        if self
+            .intro
+            .take()
+            .is_some_and(|s| s.elapsed() < crate::ui::intro::TOTAL)
+        {
+            return;
+        }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && k.code == KeyCode::Char('c') {
             return self.request_quit();
@@ -2144,6 +2171,11 @@ impl App {
             MouseEventKind::Moved => {
                 self.hover = Some(Position::new(m.column, m.row));
             }
+            MouseEventKind::Down(MouseButton::Left)
+                if self
+                    .intro
+                    .take()
+                    .is_some_and(|s| s.elapsed() < crate::ui::intro::TOTAL) => {}
             MouseEventKind::Down(MouseButton::Left) => {
                 self.press = Some((m.column, m.row));
                 self.drag_y = m.row;

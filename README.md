@@ -76,6 +76,8 @@ Necesitas `psql` en el `PATH` (y `pg_dump` / `pg_restore` para backups y `.dump`
 > [!TIP]
 > Los íconos usan una [Nerd Font](https://www.nerdfonts.com). Si tu terminal no tiene una, pon `icons = false` en la config.
 
+Al abrir, los bordes se trazan desde sus esquinas y el contenido aparece en cascada (~1,4 s; cualquier tecla o clic lo salta). Con `intro = false` abre directo.
+
 ## ⚡ Primeros pasos
 
 ```bash
@@ -226,7 +228,7 @@ Los backups nuevos se llaman `<bd>_<AAAA-MM-DD_HHMM>.zip` y se escriben con un n
 
 | Ruta | Qué guarda |
 |---|---|
-| `~/.config/odotui/config.toml` | perfiles, tema (`theme`) e íconos (`icons`) |
+| `~/.config/odotui/config.toml` | perfiles, tema (`theme`), íconos (`icons`) y animación de entrada (`intro`) |
 | `~/.local/state/odotui/history.json` | historial de restauraciones (las de la IA van marcadas) |
 | `~/.local/state/odotui/odoo-<perfil>.{pid,log}` | el Odoo local en segundo plano |
 

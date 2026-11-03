@@ -3,6 +3,7 @@
 
 mod databases;
 mod instance;
+pub mod intro;
 pub mod logfmt;
 mod modules;
 mod profiles;
@@ -67,6 +68,11 @@ pub fn draw(f: &mut Frame, app: &App, hits: &mut HitMap) {
         draw_confirm(f, app, &c.message, hits);
     }
     draw_toast(f, body, app);
+
+    // Al abrir: el cuadro ya dibujado aparece trazado (ver `intro`).
+    if let Some(elapsed) = app.intro_elapsed() {
+        intro::apply(f.buffer_mut(), elapsed, &app.theme);
+    }
 }
 
 fn draw_header(f: &mut Frame, row: Rect, app: &App, hits: &mut HitMap) {

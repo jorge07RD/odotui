@@ -143,6 +143,9 @@ pub struct Config {
     /// Íconos de Nerd Font (por defecto sí); `false` para terminales sin ella.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icons: Option<bool>,
+    /// Animación de entrada al abrir la TUI (por defecto sí).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intro: Option<bool>,
     #[serde(default, rename = "profile")]
     pub profiles: Vec<Profile>,
 }
@@ -192,6 +195,7 @@ mod tests {
             theme: Some("gruvbox".into()),
             default_profile: Some("dev".into()),
             icons: Some(false),
+            intro: Some(false),
             profiles: vec![
                 Profile {
                     name: "dev".into(),
