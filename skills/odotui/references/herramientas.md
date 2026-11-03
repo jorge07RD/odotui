@@ -45,7 +45,7 @@ TUI abierta, se ven en su pestaña.
 | `odoo_shell` | `database*`, `code*` | Python con `env`. Rollback salvo `env.cr.commit()`; usa `print()` |
 | `scaffold_module` | `name*` | `odoo scaffold` en `addons_dir`; devuelve la ruta |
 | `login` | `database*`, `user` (login o id; omitido = admin), `open` (sí) | Como «Conectar» de Odoo.sh: abre el navegador ya dentro, sin tocar contraseñas. Odoo debe estar corriendo; el enlace vale una vez, 120 s |
-| `instance` | `action*`: `start` · `stop` · `restart`, `dev` (sí, solo local) | Docker: el contenedor. Local: `odoo-bin` en segundo plano |
+| `instance` | `action*`: `start` · `stop` · `restart`, `dev` (sí, solo local), `database` (solo local) | Docker: el contenedor. Local: `odoo-bin` en segundo plano. Con `database`, solo esa BD (`-d` + `--db-filter`): las demás ni se ven ni corren sus crons. Sin ella, `start` = todas y `restart` = las mismas. `status` dice con cuál corre |
 
 ## Ejemplos
 

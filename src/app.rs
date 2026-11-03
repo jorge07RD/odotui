@@ -32,7 +32,9 @@ use crate::{
     jobs::{AiRequest, Ev, Progress, Sink, Tx},
     log::{ListState, LogView},
     odoo::{
-        backup, filestore, instance, login, modules,
+        backup, filestore,
+        instance::{self, Dbs},
+        login, modules,
         modules::ModuleInfo,
         neutralize, pg,
         pg::DbInfo,
@@ -143,6 +145,8 @@ pub struct App {
     pub restore_target: Option<String>,
 
     pub inst_status: String,
+    /// La BD con la que corre Odoo si se lanzó con una sola.
+    pub inst_db: Option<String>,
     pub inst_log: LogView,
     logs_job: Option<CancellationToken>,
     /// Número del seguimiento de log en curso (los avisos de uno viejo se ignoran).
@@ -216,6 +220,7 @@ impl App {
             restore_log: LogView::default(),
             restore_target: None,
             inst_status: "—".into(),
+            inst_db: None,
             inst_log: LogView::default(),
             logs_job: None,
             logs_seq: 0,
@@ -479,7 +484,8 @@ impl App {
         let (tx, g) = (self.tx.clone(), self.generation);
         tokio::spawn(async move {
             let s = instance::status(&p).await;
-            let _ = tx.send(Ev::Status(g, s));
+            let db = instance::running_db(&p);
+            let _ = tx.send(Ev::Status(g, s, db));
         });
     }
 
@@ -644,7 +650,10 @@ impl App {
                     }
                 }
             }
-            Ev::Status(g, s) if g == self.generation => self.inst_status = s,
+            Ev::Status(g, s, db) if g == self.generation => {
+                self.inst_status = s;
+                self.inst_db = db;
+            }
             Ev::LogsEnded(seq) if seq == self.logs_seq => self.logs_job = None,
             Ev::Ai(req) => self.on_ai(req),
             Ev::LoginUsers(g, db, r) if g == self.generation => match r {
@@ -787,6 +796,7 @@ impl App {
         self.marks.clear();
         self.mod_db = None;
         self.inst_status = "—".into();
+        self.inst_db = None;
         self.inst_log.clear();
         self.restore_target = None;
         let name = self.cfg.profiles[i].name.clone();
@@ -1098,6 +1108,32 @@ impl App {
                     Err(e) => self.toast(format!("✗ {e}")),
                 }
             }
+            Cmd::DbRunOnly => {
+                let Some(db) = self.selected_db().cloned() else {
+                    return;
+                };
+                if db.version.is_none() {
+                    return self.toast("no es una BD de Odoo");
+                }
+                if p.is_docker() {
+                    return self.toast("solo en perfiles local: en docker va en el compose");
+                }
+                if self.inst_db.as_deref() == Some(&db.name) {
+                    return self.toast(format!("Odoo ya corre solo con «{}»", db.name));
+                }
+                let verb = if self.inst_status == "running" {
+                    "restart"
+                } else {
+                    "start"
+                };
+                self.run_instance(verb, Dbs::Only(db.name), &p);
+            }
+            Cmd::InstAllDbs => {
+                if self.inst_db.is_none() {
+                    return self.toast("Odoo ya corre con todas las BDs");
+                }
+                self.run_instance("restart", Dbs::All, &p);
+            }
             Cmd::DbLogin | Cmd::DbLoginAs => {
                 let Some(db) = self.selected_db().cloned() else {
                     return;
@@ -1270,10 +1306,26 @@ impl App {
             Cmd::InstStop => "stop",
             _ => "restart",
         };
+        // Iniciar = todas; reiniciar conserva la BD con la que corría.
+        let dbs = if c == Cmd::InstStart {
+            Dbs::All
+        } else {
+            Dbs::Same
+        };
+        self.run_instance(verb, dbs, p);
+    }
+
+    fn run_instance(&mut self, verb: &'static str, dbs: Dbs, p: &Profile) {
         let (p, dev) = (p.clone(), self.dev);
-        self.inst_log.push(format!("▶ {verb}"));
-        self.spawn_busy(Sink::Instance, format!("odoo {verb}"), {
-            move |tx, _| async move { instance::action(&p, verb, dev, &tx).await }
+        let label = match &dbs {
+            Dbs::Only(db) => format!("odoo {verb} solo con «{db}»"),
+            Dbs::All if verb != "stop" => format!("odoo {verb} con todas las BDs"),
+            _ => format!("odoo {verb}"),
+        };
+        self.inst_log
+            .push(format!("▶ {}", label.trim_start_matches("odoo ")));
+        self.spawn_busy(Sink::Instance, label, {
+            move |tx, _| async move { instance::action(&p, verb, dev, dbs, &tx).await }
         });
     }
 
@@ -1792,6 +1844,8 @@ impl App {
             ("BDs: psql en la seleccionada", Cmd::DbPsql),
             ("BDs: conectar como administrador", Cmd::DbLogin),
             ("BDs: conectar como…", Cmd::DbLoginAs),
+            ("BDs: correr Odoo solo con la seleccionada", Cmd::DbRunOnly),
+            ("Instancia: correr con todas las BDs", Cmd::InstAllDbs),
             (
                 "BDs: restaurar un backup sobre la seleccionada",
                 Cmd::DbRestoreHere,
@@ -2015,6 +2069,8 @@ impl App {
             (Tab::Dbs, KeyCode::Char('P')) => Cmd::DbPsql,
             (Tab::Dbs, KeyCode::Char('o')) => Cmd::DbLogin,
             (Tab::Dbs, KeyCode::Char('O')) => Cmd::DbLoginAs,
+            (Tab::Dbs, KeyCode::Char('i')) => Cmd::DbRunOnly,
+            (Tab::Instance, KeyCode::Char('a')) => Cmd::InstAllDbs,
             (Tab::Restore, KeyCode::Char('r')) => Cmd::Refresh,
             (Tab::Restore, KeyCode::Char('R')) => Cmd::Restore,
             (Tab::Instance, KeyCode::Char('s')) => Cmd::InstStart,

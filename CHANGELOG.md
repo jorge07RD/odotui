@@ -6,6 +6,7 @@ Formato de [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/); las vers
 
 ### Añadido
 
+- **Correr una sola BD**: `i` en BDs (re)inicia Odoo local solo con la base seleccionada (`-d <bd> --db-filter=^<bd>$`): las demás no aparecen ni cargan, así que tampoco corren sus crons. Reiniciar la conserva; Instancia la muestra como «solo <bd>» y `a` vuelve a todas. En MCP, `instance` acepta `database` y `status` dice con cuál corre. «Conectar» avisa si pides otra BD.
 - **Conectar, como en Odoo.sh**: en BDs, `o` (o el botón «Conectar» del detalle) abre Odoo en el navegador ya dentro como el administrador, y `O` («Como…») deja elegir el usuario en un selector con filtro (admins, internos y portal). `odoo shell` crea una sesión de verdad (`Session.finalize`) sin tocar contraseñas, y un enlace local de un solo uso pone la cookie y redirige a `/web`. También como herramienta MCP `login`.
 
 ### Cambiado

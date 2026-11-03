@@ -82,6 +82,18 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
         None,
         app,
     ));
+    if let Some(db) = &app.inst_db {
+        spans.push(Span::raw(" "));
+        spans.extend(widgets::pill(
+            vec![Span::styled(
+                format!("solo {db}"),
+                Style::new().fg(t.bg).bold(),
+            )],
+            t.warn,
+            None,
+            app,
+        ));
+    }
     if !p.is_docker() && app.dev {
         spans.push(Span::raw(" "));
         spans.extend(widgets::pill(
@@ -99,25 +111,26 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
 
     let idle = app.busy.is_none();
     let local = !p.is_docker();
-    widgets::toolbar(
-        f,
-        bar,
-        app,
-        &[
-            Btn::new("s", "Iniciar", Action::Cmd(Cmd::InstStart)).enabled(idle && !running),
-            Btn::new("t", "Parar", Action::Cmd(Cmd::InstStop))
-                .enabled(idle && running)
-                .danger(),
-            Btn::new("R", "Reiniciar", Action::Cmd(Cmd::InstRestart)).enabled(idle),
-            Btn::new("L", "Logs on/off", Action::Cmd(Cmd::InstLogs)),
-            Btn::new("v", "--dev", Action::Cmd(Cmd::InstDev)).enabled(local),
-            Btn::new("o", "Abrir", Action::Cmd(Cmd::InstOpen)),
-            Btn::new("f", "Seguir", Action::Cmd(Cmd::Follow)),
-            Btn::new("/", "Filtrar", Action::Filter(Pane::InstanceLog)),
-            Btn::new("C", "Limpiar", Action::Cmd(Cmd::ClearLog)),
-        ],
-        hits,
-    );
+    let mut btns = vec![
+        Btn::new("s", "Iniciar", Action::Cmd(Cmd::InstStart)).enabled(idle && !running),
+        Btn::new("t", "Parar", Action::Cmd(Cmd::InstStop))
+            .enabled(idle && running)
+            .danger(),
+        Btn::new("R", "Reiniciar", Action::Cmd(Cmd::InstRestart)).enabled(idle),
+    ];
+    // Solo cuando corre con una BD: volver a todas.
+    if app.inst_db.is_some() {
+        btns.push(Btn::new("a", "Todas", Action::Cmd(Cmd::InstAllDbs)).enabled(idle));
+    }
+    btns.extend([
+        Btn::new("L", "Logs on/off", Action::Cmd(Cmd::InstLogs)),
+        Btn::new("v", "--dev", Action::Cmd(Cmd::InstDev)).enabled(local),
+        Btn::new("o", "Abrir", Action::Cmd(Cmd::InstOpen)),
+        Btn::new("f", "Seguir", Action::Cmd(Cmd::Follow)),
+        Btn::new("/", "Filtrar", Action::Filter(Pane::InstanceLog)),
+        Btn::new("C", "Limpiar", Action::Cmd(Cmd::ClearLog)),
+    ]);
+    widgets::toolbar(f, bar, app, &btns, hits);
 
     let badge = if app.inst_log.is_empty() {
         None

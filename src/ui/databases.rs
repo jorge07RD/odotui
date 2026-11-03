@@ -202,6 +202,14 @@ fn detail(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
             lines.push(Line::raw(""));
             lines.push(row("tamaño", human(d.size)));
             lines.push(row("dueño", d.owner.clone()));
+            match app.inst_db.as_deref() {
+                Some(db) if db == d.name => lines.push(Line::from(vec![
+                    Span::styled(format!(" {:<10}", "instancia"), Style::new().fg(t.dim)),
+                    Span::styled("● corre sola", Style::new().fg(t.ok).bold()),
+                ])),
+                Some(db) => lines.push(row("instancia", format!("corre solo «{db}»"))),
+                None => {}
+            }
             if let Some(p) = app.current() {
                 lines.push(row(
                     "filestore",
@@ -234,6 +242,23 @@ fn detail(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     // «Conectar» como en Odoo.sh: entrar ya dentro, como admin o como otro.
     let odoo = app.selected_db().is_some_and(|d| d.version.is_some());
     let y = top.y + n + 1;
+    if odoo && y + 2 < top.bottom() {
+        let idle = app.busy.is_none();
+        let alone = app
+            .selected_db()
+            .is_some_and(|d| app.inst_db.as_deref() == Some(&d.name));
+        let local = app.current().is_some_and(|p| !p.is_docker());
+        widgets::toolbar(
+            f,
+            Rect::new(top.x, y + 2, top.width, 1),
+            app,
+            &[
+                Btn::new("i", "Correr solo esta", Action::Cmd(Cmd::DbRunOnly))
+                    .enabled(idle && local && !alone),
+            ],
+            hits,
+        );
+    }
     if odoo && y < top.bottom() {
         let free = app.connecting.is_none();
         let label = if free { "Conectar" } else { "Conectando…" };
