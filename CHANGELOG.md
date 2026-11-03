@@ -2,6 +2,12 @@
 
 Formato de [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/); las versiones siguen [SemVer](https://semver.org/lang/es/).
 
+## [Sin publicar]
+
+### Cambiado
+
+- **Log de la restauración como en RDO**: lo que imprime `psql` al cargar el dump (`CREATE TABLE`, `COPY 1532`, `ALTER TABLE`…) aparece en el log en vivo, sin las líneas vacías ni los valores de los `setval`; `pg_restore` corre con `--verbose` y nombra cada tabla. El log guarda hasta 50 000 líneas para que quepa entero un dump de Odoo (~20 000).
+
 ## [0.2.0] - 2026-10-31
 
 ### Añadido

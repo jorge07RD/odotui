@@ -103,6 +103,10 @@ impl<R: Read> Read for Counted<R> {
 pub enum Output {
     /// Al log, línea a línea.
     Log,
+    /// Al log, pero sin el ruido de `psql -tA` al cargar un dump: quedan las
+    /// etiquetas (`CREATE TABLE`, `COPY 1532`…), no las líneas vacías ni los
+    /// valores de los `setval`.
+    Psql,
     /// A un archivo, tal cual (p. ej. lo que escribe `pg_dump`); el progreso
     /// son los bytes escritos.
     File(PathBuf),
@@ -267,7 +271,19 @@ pub async fn capture(spec: &Spec) -> Result<String> {
     bail!("{tail}")
 }
 
-async fn pump(r: impl AsyncRead + Unpin, tx: Tx, errors: Arc<AtomicUsize>) {
+/// Ruido de `psql -tA` al cargar un dump: líneas vacías y los resultados de
+/// `SELECT pg_catalog.setval(…)` / `set_config(…)`.
+pub fn psql_noise(line: &str) -> bool {
+    let l = line.trim();
+    l.is_empty() || l.bytes().all(|b| b.is_ascii_digit()) || l == "t" || l == "f"
+}
+
+async fn pump(
+    r: impl AsyncRead + Unpin,
+    tx: Tx,
+    errors: Arc<AtomicUsize>,
+    skip: Option<fn(&str) -> bool>,
+) {
     let mut r = BufReader::new(r);
     let mut buf = Vec::new();
     loop {
@@ -276,6 +292,9 @@ async fn pump(r: impl AsyncRead + Unpin, tx: Tx, errors: Arc<AtomicUsize>) {
             Ok(0) | Err(_) => break,
             Ok(_) => {
                 let line = clean(&buf);
+                if skip.is_some_and(|f| f(&line)) {
+                    continue;
+                }
                 if line.contains("ERROR") || line.contains("FATAL") {
                     errors.fetch_add(1, Ordering::Relaxed);
                 }
@@ -348,14 +367,22 @@ pub async fn stream_to(
     let (mut out, mut saved) = (None, None);
     if let Some(o) = child.stdout.take() {
         match &output {
-            Output::Log => out = Some(tokio::spawn(pump(o, tx.clone(), errors.clone()))),
+            Output::Log => out = Some(tokio::spawn(pump(o, tx.clone(), errors.clone(), None))),
+            Output::Psql => {
+                out = Some(tokio::spawn(pump(
+                    o,
+                    tx.clone(),
+                    errors.clone(),
+                    Some(psql_noise),
+                )))
+            }
             Output::File(path) => saved = Some(tokio::spawn(to_file(o, path.clone(), tx.clone()))),
         }
     }
     let err = child
         .stderr
         .take()
-        .map(|e| tokio::spawn(pump(e, tx.clone(), errors.clone())));
+        .map(|e| tokio::spawn(pump(e, tx.clone(), errors.clone(), None)));
     let mut input = child.stdin.take();
 
     let finished = tokio::select! {
@@ -472,6 +499,22 @@ async fn drain(out: Option<tokio::task::JoinHandle<()>>, err: Option<tokio::task
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn psql_noise_keeps_tags_and_errors() {
+        for noise in ["", "  ", "42", "1", "t"] {
+            assert!(psql_noise(noise), "{noise:?}");
+        }
+        for kept in [
+            "CREATE TABLE",
+            "COPY 1532",
+            "ALTER TABLE",
+            "SET",
+            "ERROR:  must be owner of extension plpgsql",
+        ] {
+            assert!(!psql_noise(kept), "{kept:?}");
+        }
+    }
 
     #[test]
     fn docker_exec_forwards_env_by_name() {
