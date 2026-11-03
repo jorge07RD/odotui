@@ -76,7 +76,7 @@ Necesitas `psql` en el `PATH` (y `pg_dump` / `pg_restore` para backups y `.dump`
 > [!TIP]
 > Los íconos usan una [Nerd Font](https://www.nerdfonts.com). Si tu terminal no tiene una, pon `icons = false` en la config.
 
-Al abrir, los bordes se trazan desde sus esquinas y el contenido aparece en cascada (~1,4 s; cualquier tecla o clic lo salta). Con `intro = false` abre directo.
+Al abrir, los bordes se trazan desde sus esquinas y el contenido aparece en cascada (~1,4 s); la primera vez que entras en cada pestaña, lo mismo con su contenido. Cualquier tecla o clic lo corta y hace lo suyo. Con `intro = false` abre directo.
 
 ## ⚡ Primeros pasos
 

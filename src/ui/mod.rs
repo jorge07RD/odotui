@@ -69,9 +69,11 @@ pub fn draw(f: &mut Frame, app: &App, hits: &mut HitMap) {
     }
     draw_toast(f, body, app);
 
-    // Al abrir: el cuadro ya dibujado aparece trazado (ver `intro`).
-    if let Some(elapsed) = app.intro_elapsed() {
-        intro::apply(f.buffer_mut(), elapsed, &app.theme);
+    // Al abrir (toda la pantalla) o al entrar por primera vez en una pestaña
+    // (solo su cuerpo): el cuadro ya dibujado aparece trazado (ver `intro`).
+    if let Some((elapsed, whole)) = app.intro_elapsed() {
+        let zone = if whole { area } else { body };
+        intro::apply(f.buffer_mut(), zone, elapsed, &app.theme);
     }
 }
 

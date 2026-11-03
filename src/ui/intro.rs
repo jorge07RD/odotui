@@ -14,6 +14,7 @@ use std::{collections::VecDeque, time::Duration};
 
 use ratatui::{
     buffer::Buffer,
+    layout::Rect,
     style::{Color, Modifier},
 };
 
@@ -82,14 +83,13 @@ struct Strokes {
     strokes: Vec<(u32, f64)>,
 }
 
-fn strokes(buf: &Buffer) -> Strokes {
-    let area = buf.area;
+/// Índices locales a `area` (fila a fila).
+fn strokes(buf: &Buffer, area: Rect) -> Strokes {
     let (w, h) = (area.width as usize, area.height as usize);
-    let arm: Vec<u8> = buf
-        .content
-        .iter()
-        .map(|c| {
-            let mut chars = c.symbol().chars();
+    let arm: Vec<u8> = (0..w * h)
+        .map(|i| {
+            let cell = &buf[(area.x + (i % w) as u16, area.y + (i / w) as u16)];
+            let mut chars = cell.symbol().chars();
             match (chars.next(), chars.next()) {
                 (Some(ch), None) => arms(ch),
                 _ => 0,
@@ -151,23 +151,24 @@ fn solid(c: Color, fallback: Color) -> Color {
     }
 }
 
-/// Dibuja el cuadro tal como se ve a `elapsed` del arranque.
-pub fn apply(buf: &mut Buffer, elapsed: Duration, theme: &Theme) {
+/// Dibuja `area` del cuadro tal como se ve a `elapsed` del inicio (al abrir,
+/// la pantalla entera; al entrar por primera vez en una pestaña, su cuerpo).
+pub fn apply(buf: &mut Buffer, area: Rect, elapsed: Duration, theme: &Theme) {
     let t = elapsed.as_secs_f64();
     if t >= TOTAL.as_secs_f64() {
         return;
     }
-    let area = buf.area;
+    let area = area.intersection(buf.area);
     let (w, h) = (area.width as usize, area.height as usize);
     if w == 0 || h == 0 {
         return;
     }
-    let lines = strokes(buf);
+    let lines = strokes(buf, area);
     let head = mix(theme.accent, Color::Rgb(255, 255, 255), 0.45);
 
     for i in 0..w * h {
         let (x, y) = (i % w, i / w);
-        let cell = &mut buf.content[i];
+        let cell = &mut buf[(area.x + x as u16, area.y + y as u16)];
         match lines.at[i] {
             // Borde: visible si la pluma ya pasó por aquí.
             Some((d, id)) => {
@@ -237,8 +238,6 @@ pub fn apply(buf: &mut Buffer, elapsed: Duration, theme: &Theme) {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::layout::Rect;
-
     use super::*;
 
     fn boxed() -> Buffer {
@@ -261,7 +260,8 @@ mod tests {
 
     #[test]
     fn a_box_is_one_stroke_from_its_corner() {
-        let s = strokes(&boxed());
+        let b = boxed();
+        let s = strokes(&b, b.area);
         assert_eq!(s.strokes.len(), 1);
         assert_eq!(s.at[0], Some((0, 0)), "╭ empieza");
         // La esquina opuesta es lo último: 5 a la derecha + 2 abajo.
@@ -277,7 +277,7 @@ mod tests {
         b[(0, 0)].set_symbol("─");
         b[(1, 0)].set_symbol("┐");
         b[(1, 1)].set_symbol("─");
-        let s = strokes(&b);
+        let s = strokes(&b, b.area);
         assert_ne!(s.at[1].unwrap().1, s.at[3].unwrap().1);
     }
 
@@ -285,17 +285,33 @@ mod tests {
     fn draws_from_the_corner_then_shows_everything() {
         let theme = crate::theme::Theme::by_name(Some("tokyonight"));
         let mut start = boxed();
-        apply(&mut start, Duration::ZERO, &theme);
+        apply(&mut start, Rect::new(0, 0, 6, 3), Duration::ZERO, &theme);
         assert_eq!(sym(&start, 0, 0), " ", "al inicio no hay nada");
         assert_eq!(sym(&start, 2, 1), " ");
 
         let mut mid = boxed();
-        apply(&mut mid, Duration::from_millis(250), &theme);
+        apply(
+            &mut mid,
+            Rect::new(0, 0, 6, 3),
+            Duration::from_millis(250),
+            &theme,
+        );
         assert_eq!(sym(&mid, 0, 0), "╭", "la esquina ya está");
         assert_eq!(sym(&mid, 5, 2), " ", "la opuesta todavía no");
 
         let mut end = boxed();
-        apply(&mut end, TOTAL, &theme);
+        apply(&mut end, Rect::new(0, 0, 6, 3), TOTAL, &theme);
         assert_eq!(end, boxed(), "al final, el cuadro tal cual");
+    }
+
+    #[test]
+    fn only_touches_its_area() {
+        let theme = crate::theme::Theme::by_name(Some("tokyonight"));
+        // Solo la fila del medio: los bordes de arriba y abajo quedan intactos.
+        let mut b = boxed();
+        apply(&mut b, Rect::new(0, 1, 6, 1), Duration::ZERO, &theme);
+        assert_eq!(sym(&b, 0, 0), "╭");
+        assert_eq!(sym(&b, 5, 2), "╯");
+        assert_eq!(sym(&b, 2, 1), " ", "el texto de la zona aún no aparece");
     }
 }
