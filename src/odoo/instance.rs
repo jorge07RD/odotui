@@ -2,6 +2,9 @@
 //!
 //! En local Odoo corre como proceso aparte, con su pid y su log en
 //! `~/.local/state/odotui/`: sobrevive a odotui y lo ven igual la TUI y la IA.
+//! Puede correr con una sola BD (`-d <bd> --db-filter=^<bd>$`): las demás ni
+//! se ven ni cargan, así que tampoco corren sus crons. Cuál es se guarda junto
+//! al pid (`odoo-<perfil>.db`).
 
 use std::{io::Write, path::PathBuf, time::Duration};
 
@@ -65,6 +68,42 @@ pub fn local_pid(p: &Profile) -> Option<i32> {
     (ours && !zombie).then_some(pid)
 }
 
+/// La BD con la que corre Odoo local, si se lanzó con una sola.
+pub fn running_db(p: &Profile) -> Option<String> {
+    if p.is_docker() {
+        return None;
+    }
+    local_pid(p)?;
+    let db = std::fs::read_to_string(file(p, "db")).ok()?;
+    let db = db.trim();
+    (!db.is_empty()).then(|| db.to_string())
+}
+
+/// `^bd$` con los caracteres especiales escapados (los nombres válidos solo
+/// pueden traer `.` y `-`).
+pub fn db_filter(db: &str) -> String {
+    let mut out = String::from("^");
+    for c in db.chars() {
+        if !c.is_ascii_alphanumeric() && c != '_' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('$');
+    out
+}
+
+/// Con qué BD arrancar en un `start`/`restart`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Dbs {
+    /// Todas (como siempre).
+    All,
+    /// Solo esta.
+    Only(String),
+    /// Las mismas que ahora (en `restart`); `All` si no corría.
+    Same,
+}
+
 /// `running`, `exited`, `detenido`… o el error.
 pub async fn status(p: &Profile) -> String {
     if !p.is_docker() {
@@ -84,9 +123,18 @@ pub async fn status(p: &Profile) -> String {
 }
 
 /// `start`, `stop` o `restart`.
-pub async fn action(p: &Profile, verb: &str, dev: bool, tx: &Tx) -> Result<String> {
+pub async fn action(p: &Profile, verb: &str, dev: bool, dbs: Dbs, tx: &Tx) -> Result<String> {
     if !matches!(verb, "start" | "stop" | "restart") {
         bail!("acción desconocida: {verb} (start, stop o restart)");
+    }
+    if let Dbs::Only(db) = &dbs {
+        if p.is_docker() {
+            bail!(
+                "correr una sola BD solo se puede en perfiles local: en docker los argumentos \
+                 de Odoo van en el compose (command: -d {db} --db-filter=^{db}$)"
+            );
+        }
+        crate::odoo::pg::valid_name(db)?;
     }
     if p.is_docker() {
         let c = container(p)?;
@@ -94,6 +142,11 @@ pub async fn action(p: &Profile, verb: &str, dev: bool, tx: &Tx) -> Result<Strin
         exec::capture(&Spec::new("docker").args([verb, c])).await?;
         return Ok(format!("docker {verb} {c}"));
     }
+    let only = match dbs {
+        Dbs::All => None,
+        Dbs::Only(db) => Some(db),
+        Dbs::Same => running_db(p),
+    };
     if verb != "start" {
         match local_pid(p) {
             Some(pid) => stop_local(p, pid, tx).await?,
@@ -106,24 +159,33 @@ pub async fn action(p: &Profile, verb: &str, dev: bool, tx: &Tx) -> Result<Strin
     } else if let Some(pid) = local_pid(p) {
         bail!("Odoo ya está corriendo (pid {pid})");
     }
-    let pid = start_local(p, dev, tx).await?;
+    let pid = start_local(p, dev, only.as_deref(), tx).await?;
+    let which = match &only {
+        Some(db) => format!(" solo con «{db}»"),
+        None => String::new(),
+    };
     Ok(format!(
-        "Odoo iniciado (pid {pid}), log en {}",
+        "Odoo iniciado{which} (pid {pid}), log en {}",
         log_path(p).display()
     ))
 }
 
-/// `odoo-bin` con el log a archivo.
-pub fn server(p: &Profile, dev: bool) -> Result<Spec> {
+/// `odoo-bin` con el log a archivo; con `db`, solo esa BD.
+pub fn server(p: &Profile, dev: bool, db: Option<&str>) -> Result<Spec> {
     let mut s = modules::odoo(p)?;
+    if let Some(db) = db {
+        s = s
+            .args(["-d", db])
+            .arg(format!("--db-filter={}", db_filter(db)));
+    }
     if dev {
         s = s.arg("--dev=all");
     }
     Ok(s)
 }
 
-async fn start_local(p: &Profile, dev: bool, tx: &Tx) -> Result<i32> {
-    let spec = server(p, dev)?;
+async fn start_local(p: &Profile, dev: bool, db: Option<&str>, tx: &Tx) -> Result<i32> {
+    let spec = server(p, dev, db)?;
     std::fs::create_dir_all(state_dir())?;
     let log = log_path(p);
     let mut out = std::fs::File::create(&log).with_context(|| format!("{}", log.display()))?;
@@ -137,6 +199,12 @@ async fn start_local(p: &Profile, dev: bool, tx: &Tx) -> Result<i32> {
         .with_context(|| format!("no pude lanzar {}", spec.program))?;
     let pid = child.id() as i32;
     std::fs::write(file(p, "pid"), pid.to_string())?;
+    match db {
+        Some(db) => std::fs::write(file(p, "db"), db)?,
+        None => {
+            let _ = std::fs::remove_file(file(p, "db"));
+        }
+    }
     // Alguien tiene que recoger el proceso al morir para que no quede zombi.
     std::thread::spawn(move || {
         let _ = child.wait();
@@ -228,4 +296,50 @@ pub async fn read_since(
     let lines = buf.lock().map(|l| l.clone()).unwrap_or_default();
     // La primera es el `$ docker logs…` del propio stream.
     Ok((lines.into_iter().skip(1).collect(), next))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Mode;
+
+    #[test]
+    fn filter_matches_only_that_db() {
+        assert_eq!(db_filter("test_6404"), "^test_6404$");
+        assert_eq!(db_filter("pro-12.05"), "^pro\\-12\\.05$");
+    }
+
+    #[test]
+    fn server_with_one_db() {
+        let p = Profile {
+            name: "local".into(),
+            mode: Mode::Local,
+            odoo_bin: "/o/odoo-bin".into(),
+            python: "/o/py".into(),
+            odoo_conf: "/o/o.conf".into(),
+            ..Default::default()
+        };
+        let all = server(&p, false, None).unwrap().display();
+        assert!(!all.contains(" -d "), "{all}");
+        let one = server(&p, true, Some("test_6404")).unwrap().display();
+        assert!(
+            one.contains("-d test_6404 '--db-filter=^test_6404$'")
+                || one.contains("-d test_6404 --db-filter=^test_6404$"),
+            "{one}"
+        );
+        assert!(one.ends_with("--dev=all"), "{one}");
+    }
+
+    #[tokio::test]
+    async fn one_db_is_local_only() {
+        let p = Profile {
+            mode: Mode::Docker,
+            odoo_container: "web".into(),
+            ..Default::default()
+        };
+        let e = action(&p, "start", false, Dbs::Only("x".into()), &Tx::detached())
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("perfiles local"), "{e}");
+    }
 }

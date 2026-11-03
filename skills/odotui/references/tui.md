@@ -33,6 +33,7 @@ rueda y arrastre.
 | `c` · `n` | Duplicar · renombrar |
 | `x` | Neutralizar (pide la contraseña del administrador) |
 | `d` | Borrar (con confirmación) |
+| `i` | Correr Odoo solo con la BD seleccionada (en Instancia, `a` vuelve a todas) |
 | `o` · `O` | Conectar: Odoo en el navegador ya dentro, como admin · eligiendo el usuario (selector con filtro) |
 | `S` · `P` | `odoo shell` · `psql` interactivos; la TUI se suspende y vuelve al salir |
 

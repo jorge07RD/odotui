@@ -92,6 +92,10 @@ pub enum Cmd {
     DbLogin,
     /// Igual, eligiendo el usuario.
     DbLoginAs,
+    /// (Re)inicia Odoo solo con la BD seleccionada.
+    DbRunOnly,
+    /// (Re)inicia Odoo con todas las BDs.
+    InstAllDbs,
     Restore,
     InstStart,
     InstStop,

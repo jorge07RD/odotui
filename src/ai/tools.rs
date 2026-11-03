@@ -329,6 +329,7 @@ pub fn definitions() -> Vec<Value> {
             json!({
                 "action": {"type": "string", "enum": ["start", "stop", "restart"]},
                 "dev": {"type": "boolean", "default": true, "description": "Solo local: --dev=all"},
+                "database": {"type": "string", "description": "Solo local: correr Odoo solo con esta BD (-d … --db-filter=^…$); las demás no se ven ni corren sus crons. Omitido: start = todas, restart = las mismas que ahora"},
             }),
             &["action"],
             false,
@@ -679,7 +680,12 @@ async fn run(
         }
         "instance" => {
             let verb = str_arg(args, "action")?;
-            instance::action(p, &verb, bool_arg(args, "dev", true), tx).await
+            let dbs = match opt_str(args, "database").filter(|d| !d.trim().is_empty()) {
+                Some(db) => instance::Dbs::Only(db.trim().to_string()),
+                None if verb == "start" => instance::Dbs::All,
+                None => instance::Dbs::Same,
+            };
+            instance::action(p, &verb, bool_arg(args, "dev", true), dbs, tx).await
         }
         other => bail!("herramienta desconocida: {other}"),
     }
@@ -739,7 +745,11 @@ pub async fn describe(
             &p.addons_dir
         }
     );
-    out += &format!("  instancia: {}\n", instance::status(p).await);
+    out += &format!("  instancia: {}", instance::status(p).await);
+    match instance::running_db(p) {
+        Some(db) => out += &format!(" (solo con «{db}»)\n"),
+        None => out += "\n",
+    }
     let others: Vec<_> = profiles
         .iter()
         .filter(|x| x.name != p.name)

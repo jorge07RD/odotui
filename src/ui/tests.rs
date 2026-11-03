@@ -247,3 +247,31 @@ fn connect_buttons_and_user_picker() {
         Some(Action::Row(Pane::Palette, 0))
     );
 }
+
+#[test]
+fn run_one_database() {
+    let mut app = App::for_tests();
+    app.cfg.profiles[0].mode = crate::config::Mode::Local;
+    let buf = render(&mut app);
+    assert_eq!(
+        hit(&app, &buf, "Correr solo esta", None),
+        Some(Action::Cmd(Cmd::DbRunOnly))
+    );
+    // Corriendo sola: el detalle lo dice y el botón ya no hace nada.
+    app.inst_status = "running".into();
+    app.inst_db = Some("acme_prod".into());
+    let buf = render(&mut app);
+    assert!(find(&buf, "corre sola", None).is_some());
+    assert_ne!(
+        hit(&app, &buf, "Correr solo esta", None),
+        Some(Action::Cmd(Cmd::DbRunOnly))
+    );
+    // En Instancia: la pastilla y «Todas» para volver.
+    app.tab = Tab::Instance;
+    let buf = render(&mut app);
+    assert!(find(&buf, "solo acme_prod", None).is_some());
+    assert_eq!(
+        hit(&app, &buf, "Todas", None),
+        Some(Action::Cmd(Cmd::InstAllDbs))
+    );
+}

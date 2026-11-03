@@ -21,7 +21,7 @@ use crate::{
     config::Profile,
     exec::{self, Input, Stop},
     jobs::Tx,
-    odoo::{modules, pg},
+    odoo::{instance, modules, pg},
 };
 
 /// Cuánto espera el enlace a que el navegador lo abra.
@@ -251,6 +251,11 @@ pub fn open_browser(url: &str) -> Result<()> {
 /// enlace que la abre; con `open`, lo abre en el navegador.
 pub async fn connect(p: &Profile, db: &str, uid: Option<i64>, open: bool) -> Result<String> {
     local_host(p.url())?;
+    if let Some(only) = instance::running_db(p)
+        && only != db
+    {
+        bail!("Odoo corre solo con «{only}»: córrelo con «{db}» (i en BDs) para entrar ahí");
+    }
     let spec =
         modules::odoo_sub(p, Some("shell"))?.args(["-d", db, "--no-http", "--log-level=warn"]);
     let (tx, lines) = Tx::detached().capturing();

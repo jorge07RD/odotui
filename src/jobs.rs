@@ -49,7 +49,8 @@ pub enum Ev {
     Dbs(u64, Result<Vec<DbInfo>, String>),
     Backups(u64, Result<Vec<Backup>, String>),
     Modules(u64, String, Result<Vec<ModuleInfo>, String>),
-    Status(u64, String),
+    /// Estado de la instancia y, si corre con una sola, cuál.
+    Status(u64, String, Option<String>),
     /// Terminó el seguimiento n.º tal del log de Odoo (se detuvo o se canceló).
     LogsEnded(u64),
     Ai(AiRequest),
