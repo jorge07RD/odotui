@@ -69,12 +69,12 @@ Usa `show` para llevar a Jorge a la pestaña relevante cuando la TUI esté abier
 | Síntoma | Causa | Qué hacer |
 |---|---|---|
 | `permission denied … docker.sock` | El proceso no tiene el grupo `docker` | Con la TUI abierta las llamadas usan sus permisos. Si está cerrada, Jorge debe volver a iniciar sesión, o abrir odotui desde una terminal con `newgrp docker` |
-| «Usuario o contraseña incorrectos» con admin | En BDs creadas desde el gestor web el administrador tiene como login **el email** que se puso | `sql_query`: `SELECT login FROM res_users WHERE id = 2`. `neutralize_database` pone la contraseña y su log dice el login exacto |
+| «Usuario o contraseña incorrectos» con admin | En BDs creadas desde el gestor web el administrador tiene como login **el email** que se puso | `sql_query`: `SELECT login FROM res_users WHERE id = 2`. `neutralize_database` pone la contraseña y su log dice el login exacto. Sin contraseña: `login` lo abre ya dentro |
 | `Wrong value for ir.module.module.license` al actualizar | Licencia que Odoo no acepta (p. ej. `MIT`) | Usa `LGPL-3`, `AGPL-3`, `OPL-1`… `module_info` y el log lo avisan antes |
 | `Address already in use` en tests | Odoo abre HTTP con `--test-enable` | odotui ya usa un puerto propio; si reaparece, revisa la versión instalada |
 | Una herramienta no existe | Versión vieja instalada | `cd ~/Projects/odotui && cargo install --path . --locked` (pregunta antes) |
 
 ## Más detalle
 
-- `references/herramientas.md`: las 27 herramientas con sus argumentos.
+- `references/herramientas.md`: las 28 herramientas con sus argumentos.
 - `references/tui.md`: pestañas, teclas y mouse, para guiar a Jorge cuando prefiera hacerlo a mano.

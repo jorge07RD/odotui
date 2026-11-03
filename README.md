@@ -23,6 +23,7 @@ Bases de datos, backups, servidor y módulos: con el mouse, con el teclado o con
 | 💾 **Backups** | Crea `.zip` compatibles con el gestor de Odoo (con filestore y `manifest.json`) o `.dump`, y restaura esos, los de **Odoo.sh**, `.sql`, `.sql.gz` y carpetas `dump.sql`. **Progreso real**, se puede cancelar y neutraliza la copia (sin crons, sin correo, `admin/admin`). |
 | 🖥️ **Instancia** | Inicia, para y reinicia Odoo (contenedor o `odoo-bin`) con el **log en vivo**: colores por nivel, tracebacks resaltados y filtro. |
 | 🧩 **Módulos** | Instala (`-i`), actualiza (`-u`) o desinstala viendo la salida de Odoo. Marca con **⟳** tus addons cuyo código cambió y los actualiza de una vez. |
+| 🔑 **Conectar** | Como en Odoo.sh: `o` abre Odoo en el navegador ya dentro como administrador y `O` deja elegir el usuario. No toca contraseñas. |
 | 🐍 **Shell y psql** | `odoo shell` o `psql` sobre la BD seleccionada, en la misma terminal; al salir vuelves a la TUI. |
 | 🩺 **Tracebacks** | Solo errores con `e`, copia el último con `y` o haz clic en una línea roja para copiar su traceback. |
 | 🤖 **IA por MCP** | Claude Code, opencode o Codex manejan odotui entero: entienden modelos y vistas, restauran, actualizan, corren tests y leen tracebacks. **Si la TUI está abierta, lo ves en vivo.** |
@@ -124,6 +125,7 @@ flowchart LR
 | 🧪 | `run_tests` | `--test-enable --test-tags`; devuelve el resumen y cada fallo con su traceback |
 | 🐍 | `odoo_shell` | Python con `env` del ORM (rollback salvo `env.cr.commit()`) |
 | 🏗️ | `scaffold_module` | `odoo scaffold` en `addons_dir` |
+| 🔑 | `login` | Abrir Odoo en el navegador ya dentro, como el administrador o como otro usuario |
 | ⏯️ | `instance` | start · stop · restart |
 
 El ciclo típico de la IA es **entender → editar → actualizar → testear**: `describe_model` / `find_views` → editar el módulo → `update_modules` → `run_tests` → `read_logs` con `errors_only`. Restaurar y hacer backups informan su avance (`notifications/progress`) si el cliente lo pide.
@@ -136,7 +138,7 @@ El ciclo típico de la IA es **entender → editar → actualizar → testear**:
 
 ### 🧠 Skill para Claude Code
 
-[`skills/odotui/`](skills/odotui/SKILL.md) le enseña a la IA a usar odotui: empezar por `status`, el ciclo entender → editar → actualizar → testear, qué operaciones son irreversibles y los problemas ya vistos con Odoo real (login del administrador, licencias, permisos de docker). Incluye la referencia de las 27 herramientas, las teclas de la TUI y `scripts/llamar.py`, para sesiones que no tienen las herramientas MCP cargadas.
+[`skills/odotui/`](skills/odotui/SKILL.md) le enseña a la IA a usar odotui: empezar por `status`, el ciclo entender → editar → actualizar → testear, qué operaciones son irreversibles y los problemas ya vistos con Odoo real (login del administrador, licencias, permisos de docker). Incluye la referencia de las 28 herramientas, las teclas de la TUI y `scripts/llamar.py`, para sesiones que no tienen las herramientas MCP cargadas.
 
 ```bash
 ln -s ~/Projects/odotui/skills/odotui ~/.claude/skills/odotui
@@ -211,6 +213,7 @@ Los backups nuevos se llaman `<bd>_<AAAA-MM-DD_HHMM>.zip` y se escriben con un n
 | clic en `⇣ siguiendo` | `f` | seguir el final del log |
 | clic en una línea roja | `y` · `e` | copiar ese error con su traceback · copiar el último · solo errores |
 | botón Backup | `b` (BDs) | backup zip o dump de la BD |
+| botón Conectar · Como… | `o` · `O` (BDs) | entrar en Odoo como administrador · eligiendo el usuario |
 | — | `S` · `P` (BDs) | `odoo shell` · `psql` sobre la BD |
 | botón Cambiados · Desinstalar | `U` · `d` (Módulos) | actualizar los addons con ⟳ · desinstalar |
 | clic en la barra de filtro | `/` · `Esc` | filtrar · borrar el filtro |

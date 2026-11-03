@@ -44,6 +44,7 @@ TUI abierta, se ven en su pestaña.
 | `run_tests` | `database*`, `modules*`, `test_tags` | `-u --test-enable --test-tags` con puerto HTTP propio. Con fallos devuelve error + tracebacks |
 | `odoo_shell` | `database*`, `code*` | Python con `env`. Rollback salvo `env.cr.commit()`; usa `print()` |
 | `scaffold_module` | `name*` | `odoo scaffold` en `addons_dir`; devuelve la ruta |
+| `login` | `database*`, `user` (login o id; omitido = admin), `open` (sí) | Como «Conectar» de Odoo.sh: abre el navegador ya dentro, sin tocar contraseñas. Odoo debe estar corriendo; el enlace vale una vez, 120 s |
 | `instance` | `action*`: `start` · `stop` · `restart`, `dev` (sí, solo local) | Docker: el contenedor. Local: `odoo-bin` en segundo plano |
 
 ## Ejemplos

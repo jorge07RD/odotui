@@ -10,7 +10,7 @@ use crate::{
     config::Profile,
     jobs::{Sink, Tx},
     odoo::{
-        backup, dev, filestore, inspect, instance, modules, neutralize, pg,
+        backup, dev, filestore, inspect, instance, login, modules, neutralize, pg,
         restore::{self, Request, human},
     },
 };
@@ -308,6 +308,18 @@ pub fn definitions() -> Vec<Value> {
             "Crea el esqueleto de un módulo nuevo (odoo scaffold) en la carpeta addons_dir del perfil y devuelve su ruta.",
             json!({"name": {"type": "string", "description": "Nombre técnico: minúsculas, números y _"}}),
             &["name"],
+            false,
+            false,
+        ),
+        tool(
+            "login",
+            "Como «Conectar» de Odoo.sh: abre Odoo en el navegador del usuario ya dentro de la BD, como el administrador o como `user` (login o id), sin tocar contraseñas. Odoo tiene que estar corriendo. Devuelve el enlace (de un solo uso, 120 s).",
+            json!({
+                "database": db,
+                "user": {"type": "string", "description": "Login o id del usuario; omitido = el administrador (base.user_admin)"},
+                "open": {"type": "boolean", "default": true, "description": "Abrir el navegador; false = solo devolver el enlace"},
+            }),
+            &["database"],
             false,
             false,
         ),
@@ -639,6 +651,32 @@ async fn run(
             let path = dev::scaffold(p, &name, tx).await?;
             Ok(format!("módulo creado en {path}"))
         }
+        "login" => {
+            let db = db_arg(args, "database")?;
+            let uid = match opt_str(args, "user").filter(|u| !u.trim().is_empty()) {
+                None => None,
+                Some(who) => {
+                    let who = who.trim();
+                    let users = login::users(p, &db).await?;
+                    let found = users
+                        .iter()
+                        .find(|u| u.login == who || u.id.to_string() == who)
+                        .or_else(|| users.iter().find(|u| u.login.eq_ignore_ascii_case(who)));
+                    match found {
+                        Some(u) => Some(u.id),
+                        None => {
+                            let some: Vec<String> =
+                                users.iter().take(20).map(|u| u.label()).collect();
+                            anyhow::bail!(
+                                "no hay un usuario activo «{who}» en «{db}». Algunos:\n{}",
+                                some.join("\n")
+                            );
+                        }
+                    }
+                }
+            };
+            login::connect(p, &db, uid, bool_arg(args, "open", true)).await
+        }
         "instance" => {
             let verb = str_arg(args, "action")?;
             instance::action(p, &verb, bool_arg(args, "dev", true), tx).await
@@ -720,7 +758,7 @@ mod tests {
     #[test]
     fn every_tool_has_schema_and_sink_rules() {
         let defs = definitions();
-        assert_eq!(defs.len(), 27);
+        assert_eq!(defs.len(), 28);
         for d in &defs {
             let name = d["name"].as_str().unwrap();
             assert!(d["inputSchema"]["type"] == "object", "{name}");
@@ -728,7 +766,8 @@ mod tests {
             // Lo que escribe tiene log propio; lo de solo lectura, no.
             // status, switch_profile, show y cancel los resuelve quien aloja.
             let host = ["status", "switch_profile", "show", "cancel"].contains(&name);
-            if !host && name != "sql_query" {
+            // login no toca la BD (crea una sesión) y no ocupa la cola de tareas.
+            if !host && name != "sql_query" && name != "login" {
                 assert_eq!(sink(name).is_none(), ro, "{name}");
             }
         }

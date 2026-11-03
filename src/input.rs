@@ -88,6 +88,10 @@ pub enum Cmd {
     DbShell,
     DbPsql,
     DbModules,
+    /// Abre Odoo en el navegador ya dentro, como el administrador (Odoo.sh).
+    DbLogin,
+    /// Igual, eligiendo el usuario.
+    DbLoginAs,
     Restore,
     InstStart,
     InstStop,
@@ -131,6 +135,8 @@ pub enum Action {
     /// copia su traceback.
     LogLine(Pane, usize),
     Cmd(Cmd),
+    /// Entrar como el usuario n.º tal del selector (`App::login_pick`).
+    LoginAs(usize),
     Help,
     Palette,
     Close,
