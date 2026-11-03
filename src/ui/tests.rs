@@ -199,3 +199,51 @@ fn a_confirm_blocks_what_is_below() {
     assert!(app.confirm.is_none());
     assert!(!app.quit);
 }
+
+#[test]
+fn connect_buttons_and_user_picker() {
+    use crate::{
+        app::{LoginPick, Palette},
+        odoo::login::OdooUser,
+    };
+    let mut app = App::for_tests();
+    let buf = render(&mut app);
+    // El detalle de la BD de Odoo seleccionada trae «Conectar» y «Como…».
+    assert_eq!(
+        hit(&app, &buf, "Conectar", None),
+        Some(Action::Cmd(Cmd::DbLogin))
+    );
+    assert_eq!(
+        hit(&app, &buf, "Como…", None),
+        Some(Action::Cmd(Cmd::DbLoginAs))
+    );
+
+    let user = |id, login: &str, name: &str, admin| OdooUser {
+        id,
+        login: login.into(),
+        name: name.into(),
+        portal: false,
+        admin,
+    };
+    app.login_pick = Some(LoginPick {
+        db: "dev".into(),
+        users: vec![
+            user(2, "admin", "Mitchell Admin", true),
+            user(6, "demo", "Marc Demo", false),
+        ],
+    });
+    app.palette = Some(Palette {
+        users: true,
+        query: "marc".into(),
+        ..Palette::default()
+    });
+    let items = app.palette_items();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].1, Action::LoginAs(1));
+    let buf = render(&mut app);
+    assert!(find(&buf, "Conectar a dev como", None).is_some());
+    assert_eq!(
+        hit(&app, &buf, "Marc Demo", None),
+        Some(Action::Row(Pane::Palette, 0))
+    );
+}

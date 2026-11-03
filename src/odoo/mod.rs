@@ -4,6 +4,7 @@ pub mod dev;
 pub mod filestore;
 pub mod inspect;
 pub mod instance;
+pub mod login;
 pub mod modules;
 pub mod neutralize;
 pub mod pg;

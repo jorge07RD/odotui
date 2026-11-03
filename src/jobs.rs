@@ -53,6 +53,14 @@ pub enum Ev {
     /// Terminó el seguimiento n.º tal del log de Odoo (se detuvo o se canceló).
     LogsEnded(u64),
     Ai(AiRequest),
+    /// Usuarios para «Conectar como…».
+    LoginUsers(
+        u64,
+        String,
+        Result<Vec<crate::odoo::login::OdooUser>, String>,
+    ),
+    /// Terminó «Conectar».
+    Login(Result<String, String>),
 }
 
 /// Remitente atado a un log; además puede guardar las líneas para devolvérselas

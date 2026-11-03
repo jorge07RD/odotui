@@ -241,6 +241,7 @@ fn draw_footer(f: &mut Frame, row: Rect, app: &App, hits: &mut HitMap) {
     }
     let hints: &[(&str, &str)] = match app.tab {
         Tab::Dbs => &[
+            ("o", "conectar"),
             ("Enter", "módulos"),
             ("S", "odoo shell"),
             ("P", "psql"),
@@ -410,6 +411,10 @@ fn draw_help(f: &mut Frame, app: &App, hits: &mut HitMap) {
         item(":", "paleta de comandos (escribe para buscar)"),
         item("f  C", "seguir log · limpiar log"),
         item("e  y", "solo errores · copiar el último error"),
+        item(
+            "o  O",
+            "entrar en Odoo como admin · como otro usuario (BDs)",
+        ),
         item("S  P", "odoo shell · psql en la BD (BDs)"),
         item("U  d", "actualizar cambiados · desinstalar (Módulos)"),
         item("X", "cancelar la tarea en curso"),
@@ -449,7 +454,13 @@ fn draw_palette(f: &mut Frame, app: &App, hits: &mut HitMap) {
         f,
         area,
         app,
-        Line::styled(" Comandos ", Style::new().fg(t.fg).bold()),
+        Line::styled(
+            match (&app.login_pick, pal.users) {
+                (Some(pick), true) => format!(" Conectar a {} como… ", pick.db),
+                _ => " Comandos ".to_string(),
+            },
+            Style::new().fg(t.fg).bold(),
+        ),
     );
     let [query, list] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
     f.buffer_mut().set_style(query, Style::new().bg(t.border));

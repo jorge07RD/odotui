@@ -119,7 +119,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
                 .wrap(ratatui::widgets::Wrap { trim: true }),
             body,
         );
-        detail(f, detail_area, app);
+        detail(f, detail_area, app, hits);
         return log(f, log_area, app, hits);
     }
     if rows.is_empty() && !app.dbs_loading {
@@ -154,12 +154,12 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
         })
         .collect();
     widgets::list(f, body, app, Pane::DbList, lines, &app.db_list, hits);
-    detail(f, detail_area, app);
+    detail(f, detail_area, app, hits);
     log(f, log_area, app, hits);
 }
 
 /// Tarjeta con la BD seleccionada y un resumen de todas.
-fn detail(f: &mut Frame, area: Rect, app: &App) {
+fn detail(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     if area.width == 0 {
         return;
     }
@@ -229,7 +229,25 @@ fn detail(f: &mut Frame, area: Rect, app: &App) {
         row("en total", human(total)),
     ];
     let [top, bottom] = Layout::vertical([Constraint::Fill(1), Constraint::Length(3)]).areas(inner);
+    let n = lines.len() as u16;
     f.render_widget(Paragraph::new(lines), top);
+    // «Conectar» como en Odoo.sh: entrar ya dentro, como admin o como otro.
+    let odoo = app.selected_db().is_some_and(|d| d.version.is_some());
+    let y = top.y + n + 1;
+    if odoo && y < top.bottom() {
+        let free = app.connecting.is_none();
+        let label = if free { "Conectar" } else { "Conectando…" };
+        widgets::toolbar(
+            f,
+            Rect::new(top.x, y, top.width, 1),
+            app,
+            &[
+                Btn::new("o", label, Action::Cmd(Cmd::DbLogin)).enabled(free),
+                Btn::new("O", "Como…", Action::Cmd(Cmd::DbLoginAs)).enabled(free),
+            ],
+            hits,
+        );
+    }
     f.render_widget(Paragraph::new(summary), bottom);
 }
 

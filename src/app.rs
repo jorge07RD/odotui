@@ -32,7 +32,7 @@ use crate::{
     jobs::{AiRequest, Ev, Progress, Sink, Tx},
     log::{ListState, LogView},
     odoo::{
-        backup, filestore, instance, modules,
+        backup, filestore, instance, login, modules,
         modules::ModuleInfo,
         neutralize, pg,
         pg::DbInfo,
@@ -84,6 +84,14 @@ pub struct Palette {
     pub query: String,
     pub sel: usize,
     pub offset: usize,
+    /// Elige un usuario de `App::login_pick` en vez de un comando.
+    pub users: bool,
+}
+
+/// Usuarios de una BD para «Conectar como…».
+pub struct LoginPick {
+    pub db: String,
+    pub users: Vec<login::OdooUser>,
 }
 
 pub struct App {
@@ -103,6 +111,9 @@ pub struct App {
     pub hover: Option<Position>,
     pub help: bool,
     pub palette: Option<Palette>,
+    pub login_pick: Option<LoginPick>,
+    /// BD en la que se está creando una sesión («Conectar»).
+    pub connecting: Option<String>,
     pub form: Option<Form>,
     pub confirm: Option<Confirm>,
     pub toast: Option<(String, Instant)>,
@@ -181,6 +192,8 @@ impl App {
             hover: None,
             help: false,
             palette: None,
+            login_pick: None,
+            connecting: None,
             form: None,
             confirm: None,
             toast: None,
@@ -470,6 +483,32 @@ impl App {
         });
     }
 
+    /// «Conectar»: crea la sesión en segundo plano (`odoo shell` tarda unos
+    /// segundos) y abre el navegador ya dentro.
+    fn connect(&mut self, db: String, uid: Option<i64>) {
+        let Some(p) = self.current().cloned() else {
+            return;
+        };
+        if let Some(other) = &self.connecting {
+            return self.toast(format!("ya estoy conectando a «{other}»"));
+        }
+        if self.inst_status == "detenido" {
+            self.toast(format!(
+                "conectando a «{db}»… (Odoo está detenido: inícialo con s en Instancia)"
+            ));
+        } else {
+            self.toast(format!("conectando a «{db}»…"));
+        }
+        self.connecting = Some(db.clone());
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let r = login::connect(&p, &db, uid, true)
+                .await
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Ev::Login(r));
+        });
+    }
+
     /// Sigue el log de Odoo (docker logs -f o tail -F del log local).
     fn start_logs(&mut self) {
         let Some(p) = self.current().cloned() else {
@@ -608,6 +647,26 @@ impl App {
             Ev::Status(g, s) if g == self.generation => self.inst_status = s,
             Ev::LogsEnded(seq) if seq == self.logs_seq => self.logs_job = None,
             Ev::Ai(req) => self.on_ai(req),
+            Ev::LoginUsers(g, db, r) if g == self.generation => match r {
+                Ok(users) if users.is_empty() => {
+                    self.toast(format!("«{db}» no tiene usuarios activos"))
+                }
+                Ok(users) => {
+                    self.login_pick = Some(LoginPick { db, users });
+                    self.palette = Some(Palette {
+                        users: true,
+                        ..Palette::default()
+                    });
+                }
+                Err(e) => self.toast(format!("✗ {e}")),
+            },
+            Ev::Login(r) => {
+                self.connecting = None;
+                match r {
+                    Ok(msg) => self.toast(msg.split(':').next().unwrap_or(&msg).to_string()),
+                    Err(e) => self.toast(format!("✗ {e}")),
+                }
+            }
             _ => {}
         }
     }
@@ -769,6 +828,14 @@ impl App {
                 }
             }
             Action::Cmd(c) => self.cmd(c),
+            Action::LoginAs(i) => {
+                if let Some(pick) = &self.login_pick
+                    && let Some(u) = pick.users.get(i)
+                {
+                    let (db, id) = (pick.db.clone(), u.id);
+                    self.connect(db, Some(id));
+                }
+            }
             Action::Help => self.help = !self.help,
             Action::Palette => {
                 self.palette = match self.palette {
@@ -1026,15 +1093,28 @@ impl App {
             }
             Cmd::InstOpen => {
                 let url = p.url().to_string();
-                match std::process::Command::new("xdg-open")
-                    .arg(&url)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                {
+                match login::open_browser(&url) {
                     Ok(_) => self.toast(format!("abriendo {url}")),
-                    Err(e) => self.toast(format!("xdg-open: {e}")),
+                    Err(e) => self.toast(format!("✗ {e}")),
                 }
+            }
+            Cmd::DbLogin | Cmd::DbLoginAs => {
+                let Some(db) = self.selected_db().cloned() else {
+                    return;
+                };
+                if db.version.is_none() {
+                    return self.toast("no es una BD de Odoo");
+                }
+                if c == Cmd::DbLogin {
+                    return self.connect(db.name, None);
+                }
+                let (tx, g) = (self.tx.clone(), self.generation);
+                tokio::spawn(async move {
+                    let r = login::users(&p, &db.name)
+                        .await
+                        .map_err(|e| format!("{e:#}"));
+                    let _ = tx.send(Ev::LoginUsers(g, db.name, r));
+                });
             }
             Cmd::ModDb(dir) => {
                 let dbs: Vec<String> = self.odoo_dbs().iter().map(|s| s.to_string()).collect();
@@ -1689,6 +1769,14 @@ impl App {
     // ── paleta de comandos ───────────────────────────────────────────────
 
     pub fn palette_items(&self) -> Vec<(String, Action)> {
+        if self.palette.as_ref().is_some_and(|p| p.users) {
+            let users = self.login_pick.iter().flat_map(|p| p.users.iter());
+            let all = users
+                .enumerate()
+                .map(|(i, u)| (u.label(), Action::LoginAs(i)))
+                .collect();
+            return self.palette_filter(all);
+        }
         let mut all: Vec<(String, Action)> = Tab::ALL
             .iter()
             .map(|t| (format!("Ir a {}", t.title()), Action::Tab(*t)))
@@ -1702,6 +1790,8 @@ impl App {
             ("BDs: backup de la seleccionada…", Cmd::DbBackup),
             ("BDs: odoo shell en la seleccionada", Cmd::DbShell),
             ("BDs: psql en la seleccionada", Cmd::DbPsql),
+            ("BDs: conectar como administrador", Cmd::DbLogin),
+            ("BDs: conectar como…", Cmd::DbLoginAs),
             (
                 "BDs: restaurar un backup sobre la seleccionada",
                 Cmd::DbRestoreHere,
@@ -1738,6 +1828,10 @@ impl App {
         }
         all.push(("Ayuda".into(), Action::Help));
         all.push(("Salir".into(), Action::Quit));
+        self.palette_filter(all)
+    }
+
+    fn palette_filter(&self, all: Vec<(String, Action)>) -> Vec<(String, Action)> {
         let Some(pal) = &self.palette else { return all };
         let q = crate::log::fold(&pal.query);
         let words: Vec<&str> = q.split_whitespace().collect();
@@ -1919,6 +2013,8 @@ impl App {
             (Tab::Dbs, KeyCode::Char('b')) => Cmd::DbBackup,
             (Tab::Dbs, KeyCode::Char('S')) => Cmd::DbShell,
             (Tab::Dbs, KeyCode::Char('P')) => Cmd::DbPsql,
+            (Tab::Dbs, KeyCode::Char('o')) => Cmd::DbLogin,
+            (Tab::Dbs, KeyCode::Char('O')) => Cmd::DbLoginAs,
             (Tab::Restore, KeyCode::Char('r')) => Cmd::Refresh,
             (Tab::Restore, KeyCode::Char('R')) => Cmd::Restore,
             (Tab::Instance, KeyCode::Char('s')) => Cmd::InstStart,

@@ -2,6 +2,12 @@
 
 Formato de [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/); las versiones siguen [SemVer](https://semver.org/lang/es/).
 
+## [Sin publicar]
+
+### Añadido
+
+- **Conectar, como en Odoo.sh**: en BDs, `o` (o el botón «Conectar» del detalle) abre Odoo en el navegador ya dentro como el administrador, y `O` («Como…») deja elegir el usuario en un selector con filtro (admins, internos y portal). `odoo shell` crea una sesión de verdad (`Session.finalize`) sin tocar contraseñas, y un enlace local de un solo uso pone la cookie y redirige a `/web`. También como herramienta MCP `login`.
+
 ## [0.2.0] - 2026-10-31
 
 ### Añadido
