@@ -8,6 +8,10 @@ Formato de [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/); las vers
 
 - **Conectar, como en Odoo.sh**: en BDs, `o` (o el botón «Conectar» del detalle) abre Odoo en el navegador ya dentro como el administrador, y `O` («Como…») deja elegir el usuario en un selector con filtro (admins, internos y portal). `odoo shell` crea una sesión de verdad (`Session.finalize`) sin tocar contraseñas, y un enlace local de un solo uso pone la cookie y redirige a `/web`. También como herramienta MCP `login`.
 
+### Cambiado
+
+- **Log de la restauración como en RDO**: lo que imprime `psql` al cargar el dump (`CREATE TABLE`, `COPY 1532`, `ALTER TABLE`…) aparece en el log en vivo, sin las líneas vacías ni los valores de los `setval`; `pg_restore` corre con `--verbose` y nombra cada tabla. El log guarda hasta 50 000 líneas para que quepa entero un dump de Odoo (~20 000).
+
 ## [0.2.0] - 2026-10-31
 
 ### Añadido
