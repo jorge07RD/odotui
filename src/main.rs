@@ -123,6 +123,9 @@ async fn main() -> Result<()> {
     app.start();
     // Spinner, toasts que caducan y sondeo del estado de la instancia.
     let mut tick = tokio::time::interval(Duration::from_millis(250));
+    // Solo mientras dura la animación de entrada: ~60 cuadros por segundo.
+    let mut frame = tokio::time::interval(Duration::from_millis(16));
+    frame.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let result: Result<()> = loop {
         let mut hits = HitMap::default();
         if let Err(e) = terminal.draw(|f| ui::draw(f, &app, &mut hits)) {
@@ -134,6 +137,7 @@ async fn main() -> Result<()> {
             Some(ev) = events.recv() => app.on_event(ev),
             Some(ev) = jobs.recv() => app.on_ev(ev),
             _ = tick.tick() => app.on_tick(),
+            _ = frame.tick(), if app.animating() => {}
         }
         // Agrupa lo que haya llegado mientras tanto en un solo redibujo.
         while let Ok(ev) = events.try_recv() {

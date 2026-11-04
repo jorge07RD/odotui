@@ -6,6 +6,7 @@ Formato de [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/); las vers
 
 ### Añadido
 
+- **Animación de entrada**: al abrir la TUI, cada borde se traza desde su esquina con una cabeza brillante y una estela que se apaga, y luego el contenido aparece en cascada con un destello del color de acento (~1,4 s). La primera vez que se entra en cada pestaña se anima su cuerpo (la cabecera y el pie no se tocan). Es un post-proceso del cuadro, así que vale para cualquier pestaña; cualquier tecla o clic la corta y además hace lo suyo, y `intro = false` la desactiva. Solo redibuja a 60 fps mientras dura.
 - **Correr una sola BD**: `i` en BDs (re)inicia Odoo local solo con la base seleccionada (`-d <bd> --db-filter=^<bd>$`): las demás no aparecen ni cargan, así que tampoco corren sus crons. Reiniciar la conserva; Instancia la muestra como «solo <bd>» y `a` vuelve a todas. En MCP, `instance` acepta `database` y `status` dice con cuál corre. «Conectar» avisa si pides otra BD.
 - **Conectar, como en Odoo.sh**: en BDs, `o` (o el botón «Conectar» del detalle) abre Odoo en el navegador ya dentro como el administrador, y `O` («Como…») deja elegir el usuario en un selector con filtro (admins, internos y portal). `odoo shell` crea una sesión de verdad (`Session.finalize`) sin tocar contraseñas, y un enlace local de un solo uso pone la cookie y redirige a `/web`. También como herramienta MCP `login`.
 

@@ -81,6 +81,14 @@ pub struct Busy {
     reply: Option<oneshot::Sender<Result<String, String>>>,
 }
 
+/// Animación de entrada en curso.
+#[derive(Debug, Clone, Copy)]
+pub struct Intro {
+    pub start: Instant,
+    /// La pantalla entera (al abrir) o solo el cuerpo (al entrar en una pestaña).
+    pub whole: bool,
+}
+
 #[derive(Default)]
 pub struct Palette {
     pub query: String,
@@ -167,6 +175,12 @@ pub struct App {
     pub ai_seen: Option<Instant>,
     /// La TUI atiende a la IA por el socket.
     pub ai_listening: bool,
+    /// La animación en curso (ver `ui::intro`); `None` = ninguna.
+    pub intro: Option<Intro>,
+    /// `intro = false` en la config las desactiva.
+    intro_on: bool,
+    /// Pestañas ya vistas: la primera visita a cada una se anima.
+    seen: Vec<Tab>,
     pub history: Vec<Entry>,
     /// Para el bucle principal (se vacía en cada vuelta).
     pub effects: Vec<Effect>,
@@ -176,6 +190,11 @@ impl App {
     pub fn new(cfg: Config, cfg_path: PathBuf, tx: UnboundedSender<Ev>) -> Self {
         let theme = Theme::by_name(cfg.theme.as_deref());
         let profile = cfg.default_index();
+        let intro_on = cfg.intro.unwrap_or(true);
+        let intro = intro_on.then(|| Intro {
+            start: Instant::now(),
+            whole: true,
+        });
         Self {
             theme,
             glyphs: if cfg.icons.unwrap_or(true) {
@@ -239,6 +258,9 @@ impl App {
             prof_log: LogView::default(),
             ai_seen: None,
             ai_listening: false,
+            intro,
+            intro_on,
+            seen: vec![Tab::Dbs],
             history: history::load(),
             effects: vec![],
         }
@@ -264,6 +286,8 @@ impl App {
         };
         let mut app = Self::new(cfg, PathBuf::from("/nonexistent/odotui.toml"), tx);
         app.history.clear();
+        app.intro = None;
+        app.intro_on = false;
         let db = |name: &str, version: Option<&str>| DbInfo {
             name: name.into(),
             size: 50 << 20,
@@ -758,6 +782,13 @@ impl App {
     // ── acciones ─────────────────────────────────────────────────────────
 
     pub fn set_tab(&mut self, tab: Tab) {
+        if self.intro_on && !self.seen.contains(&tab) {
+            self.seen.push(tab);
+            self.intro = Some(Intro {
+                start: Instant::now(),
+                whole: false,
+            });
+        }
         self.tab = tab;
         self.focus = tab.panes()[0];
         self.filtering = None;
@@ -1954,7 +1985,25 @@ impl App {
         }
     }
 
+    /// Cuánto lleva la animación en curso y si es de la pantalla entera.
+    pub fn intro_elapsed(&self) -> Option<(std::time::Duration, bool)> {
+        let i = self.intro?;
+        let e = i.start.elapsed();
+        (e < crate::ui::intro::TOTAL).then_some((e, i.whole))
+    }
+
+    /// Hay que redibujar a ritmo de animación.
+    pub fn animating(&mut self) -> bool {
+        if self.intro_elapsed().is_none() {
+            self.intro = None;
+        }
+        self.intro.is_some()
+    }
+
     fn on_key(&mut self, k: KeyEvent) {
+        // Una tecla corta la animación y además hace lo suyo (si lleva a una
+        // pestaña nueva, empieza la de esa).
+        self.intro = None;
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && k.code == KeyCode::Char('c') {
             return self.request_quit();
@@ -2145,6 +2194,7 @@ impl App {
                 self.hover = Some(Position::new(m.column, m.row));
             }
             MouseEventKind::Down(MouseButton::Left) => {
+                self.intro = None;
                 self.press = Some((m.column, m.row));
                 self.drag_y = m.row;
             }
@@ -2331,6 +2381,46 @@ async fn test_profile(p: &Profile, tx: &Tx) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn press(app: &mut App, c: char) {
+        app.on_event(TermEvent::Key(KeyEvent::new(
+            KeyCode::Char(c),
+            KeyModifiers::NONE,
+        )));
+    }
+
+    #[test]
+    fn first_visit_to_each_tab_is_animated() {
+        let mut app = App::for_tests();
+        app.intro_on = true;
+        // Abrir: pantalla entera.
+        app.intro = Some(Intro {
+            start: Instant::now(),
+            whole: true,
+        });
+        assert!(app.intro_elapsed().is_some_and(|(_, whole)| whole));
+
+        // Una tecla corta la de entrada y además cambia de pestaña, que es
+        // nueva: empieza la suya, solo del cuerpo.
+        press(&mut app, '2');
+        assert_eq!(app.tab, Tab::Restore);
+        assert!(app.intro_elapsed().is_some_and(|(_, whole)| !whole));
+
+        // Otra pestaña nueva enseguida: la tecla no se pierde.
+        press(&mut app, '5');
+        assert_eq!(app.tab, Tab::Profiles);
+        assert!(app.intro.is_some());
+
+        // Volver a una ya vista no anima.
+        press(&mut app, '2');
+        assert_eq!(app.tab, Tab::Restore);
+        assert!(app.intro.is_none());
+
+        // Con intro = false, nunca.
+        let mut off = App::for_tests();
+        off.set_tab(Tab::Restore);
+        assert!(off.intro.is_none());
+    }
 
     #[test]
     fn restore_note_warns_on_other_versions() {

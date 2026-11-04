@@ -4,6 +4,10 @@
 # theme = "omarchy"
 # Íconos de Nerd Font; pon false si tu terminal no usa una.
 # icons = true
+# Animación de entrada al abrir y la primera vez en cada pestaña (los bordes
+# se trazan y el contenido aparece); false para abrir directo. Cualquier tecla
+# o clic la corta (y hace lo suyo).
+# intro = true
 default_profile = "docker-17"
 
 # Odoo y Postgres en docker compose.
