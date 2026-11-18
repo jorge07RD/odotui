@@ -92,6 +92,8 @@ pub enum Cmd {
     DbLogin,
     /// Igual, eligiendo el usuario.
     DbLoginAs,
+    /// Marca o desmarca la BD seleccionada como favorita.
+    DbFavorite,
     /// (Re)inicia Odoo solo con la BD seleccionada.
     DbRunOnly,
     /// (Re)inicia Odoo con todas las BDs.

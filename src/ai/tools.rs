@@ -98,7 +98,7 @@ pub fn definitions() -> Vec<Value> {
         ),
         tool(
             "list_databases",
-            "Lista las bases de datos con tamaño, dueño y versión de Odoo (— = no es de Odoo).",
+            "Lista las bases de datos con tamaño, dueño y versión de Odoo (— = no es de Odoo). Primero las favoritas del usuario (★) y luego la usada más recientemente (usada=…): si pide «mi BD» o «la de siempre», suele ser la primera.",
             json!({}),
             &[],
             true,
@@ -402,6 +402,12 @@ pub async fn call(
 ) -> Result<String, String> {
     let (tx, lines) = tx.capturing();
     let r = run(tool, args, p, &tx, cancel).await;
+    if r.is_ok()
+        && let Some(what) = use_label(tool)
+        && let Some(db) = opt_str(args, "database").filter(|d| !d.trim().is_empty())
+    {
+        crate::dbmarks::touch(&p.name, db.trim(), what);
+    }
     let lines = lines.lock().map(|l| l.clone()).unwrap_or_default();
     let tail = match tool {
         "odoo_shell" => 150,
@@ -419,6 +425,21 @@ pub async fn call(
     }
 }
 
+/// Lo que cuenta como «usar» una BD (ver `dbmarks`), con su etiqueta.
+fn use_label(tool: &str) -> Option<&'static str> {
+    Some(match tool {
+        "login" => "conectar (IA)",
+        "odoo_shell" => "odoo shell (IA)",
+        "install_modules" => "instalar módulos (IA)",
+        "update_modules" => "actualizar módulos (IA)",
+        "uninstall_modules" => "desinstalar módulos (IA)",
+        "run_tests" => "tests (IA)",
+        "restore_backup" => "restaurar (IA)",
+        "instance" => "correr solo esta (IA)",
+        _ => return None,
+    })
+}
+
 async fn run(
     tool: &str,
     args: &Value,
@@ -428,11 +449,24 @@ async fn run(
 ) -> Result<String> {
     match tool {
         "list_databases" => {
-            let dbs = pg::list(p).await?;
+            let mut dbs = pg::list(p).await?;
+            // Como en la TUI: favoritas (★) y luego la más usada hace poco.
+            let marks = crate::dbmarks::load(&p.name);
+            dbs.sort_by(|a, b| marks.order(&a.name, &b.name));
+            let now = Local::now();
             let mut out = format!("{} base(s) en «{}»:\n", dbs.len(), p.name);
             for d in dbs {
+                let star = if marks.is_favorite(&d.name) {
+                    "★ "
+                } else {
+                    ""
+                };
+                let used = marks
+                    .last_use(&d.name)
+                    .map(|u| format!("\tusada={} ({})", crate::dbmarks::ago(u.at, now), u.what))
+                    .unwrap_or_default();
                 out += &format!(
-                    "{}\todoo={}\t{}\tdueño={}\n",
+                    "{star}{}\todoo={}\t{}\tdueño={}{used}\n",
                     d.name,
                     d.version.as_deref().unwrap_or("—"),
                     human(d.size),
@@ -596,6 +630,7 @@ async fn run(
             tx.log(format!("▶ borrando «{db}»"));
             pg::drop(p, &db).await?;
             filestore::remove(p, &db, tx).await?;
+            crate::dbmarks::forget(&p.name, &db);
             Ok(format!("«{db}» borrada"))
         }
         "duplicate_database" | "rename_database" => {
@@ -613,6 +648,7 @@ async fn run(
                 tx.log(format!("▶ renombrando «{from}» → «{to}»"));
                 pg::rename(p, &from, &to).await?;
                 filestore::rename(p, &from, &to, tx).await?;
+                crate::dbmarks::rename(&p.name, &from, &to);
                 Ok(format!("«{from}» ahora es «{to}»"))
             }
         }

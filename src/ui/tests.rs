@@ -275,3 +275,31 @@ fn run_one_database() {
         Some(Action::Cmd(Cmd::InstAllDbs))
     );
 }
+
+#[test]
+fn favorite_and_recent_databases_go_first() {
+    let mut app = App::for_tests();
+    let names = |app: &App| -> Vec<String> {
+        app.db_rows()
+            .iter()
+            .map(|&i| app.dbs[i].name.clone())
+            .collect()
+    };
+    assert_eq!(names(&app), ["acme_prod", "acme_staging", "postgres"]);
+
+    // Clic en la estrella de acme_staging: favorita, sube y sigue seleccionada.
+    let buf = render(&mut app);
+    let (x, y) = find(&buf, "acme_staging", None).unwrap();
+    assert_eq!(app.hits.at(x - 2, y), Some(Action::Toggle(Pane::DbList, 1)));
+    click(&mut app, x - 2, y);
+    assert!(app.db_marks.is_favorite("acme_staging"));
+    assert_eq!(names(&app), ["acme_staging", "acme_prod", "postgres"]);
+    assert_eq!(app.selected_db().unwrap().name, "acme_staging");
+
+    // Usada hace poco: justo después de las favoritas, con su «cuándo».
+    app.db_marks.touch("postgres", "psql");
+    assert_eq!(names(&app), ["acme_staging", "postgres", "acme_prod"]);
+    let buf = render(&mut app);
+    assert!(find(&buf, "★ acme_staging", None).is_some());
+    assert!(find(&buf, "ahora", None).is_some());
+}
