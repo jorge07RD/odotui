@@ -8,7 +8,7 @@ TUI abierta, se ven en su pestaña.
 
 | Herramienta | Argumentos | Para qué |
 |---|---|---|
-| `status` | — | Perfil activo, rutas, contenedores, estado de Odoo, tarea en curso, si la TUI está abierta |
+| `status` | — | Perfil activo, rutas, contenedores, estado de Odoo, tarea en curso, si la TUI está abierta Al final, todos los Odoo que corren en la máquina (de cualquier perfil o lanzados fuera de odotui) con pid, puerto y BD |
 | `switch_profile` | `profile*` | Cambiar de perfil (falla si hay una tarea en curso) |
 | `show` | `tab*`: `dbs` · `restore` · `instance` · `modules` · `profiles` | Mostrar una pestaña en la TUI |
 | `cancel` | — | Cancelar la tarea larga en curso |
