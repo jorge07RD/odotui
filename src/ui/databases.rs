@@ -98,19 +98,20 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     );
     let inner = widgets::filter_bar(f, inner, app, Pane::DbList, hits);
     let [head, body] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
-    let name_w = (inner.width as usize).saturating_sub(42).clamp(12, 48);
+    let name_w = (inner.width as usize).saturating_sub(46).clamp(12, 48);
     widgets::header(
         f,
         head,
         app,
         format!(
-            "  {}  {} {}   {}",
+            "    {}  {} {}   {}",
             cell("NOMBRE", name_w),
             cell("ODOO", 12),
             rcell("TAMAÑO", 10),
-            cell("DUEÑO", 12)
+            cell("USADA", 12)
         ),
     );
+    let now = chrono::Local::now();
 
     if let Some(e) = &app.dbs_err {
         f.render_widget(
@@ -141,19 +142,36 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
                 Some(v) => (format!("● {v}"), Style::new().fg(t.ok)),
                 None => ("○ —".to_string(), Style::new().fg(t.dim)),
             };
+            let (star, sstyle) = if app.db_marks.is_favorite(&d.name) {
+                ("★", Style::new().fg(t.warn).bold())
+            } else {
+                ("☆", Style::new().fg(t.border))
+            };
+            let used = app
+                .db_marks
+                .last_use(&d.name)
+                .map(|u| crate::dbmarks::ago(u.at, now))
+                .unwrap_or_else(|| "—".into());
             Line::from(vec![
-                Span::styled(
-                    format!(" {}", cell(&d.name, name_w)),
-                    Style::new().fg(t.fg).bold(),
-                ),
+                Span::styled(format!(" {star} "), sstyle),
+                Span::styled(cell(&d.name, name_w), Style::new().fg(t.fg).bold()),
                 Span::raw("  "),
                 Span::styled(cell(&ver, 12), vstyle),
                 Span::styled(rcell(&human(d.size), 10), Style::new().fg(t.fg)),
-                Span::styled(format!("   {}", cell(&d.owner, 12)), Style::new().fg(t.dim)),
+                Span::styled(format!("   {}", cell(&used, 12)), Style::new().fg(t.dim)),
             ])
         })
         .collect();
+    // La estrella es clicable aparte de la fila: marca o desmarca la favorita.
+    let h = body.height as usize;
+    let offset = app.db_list.offset.min(rows.len().saturating_sub(h));
     widgets::list(f, body, app, Pane::DbList, lines, &app.db_list, hits);
+    for k in 0..rows.len().saturating_sub(offset).min(h) {
+        hits.push(
+            Rect::new(body.x + 1, body.y + k as u16, 3, 1),
+            Action::Toggle(Pane::DbList, offset + k),
+        );
+    }
     detail(f, detail_area, app, hits);
     log(f, log_area, app, hits);
 }
@@ -202,6 +220,16 @@ fn detail(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
             lines.push(Line::raw(""));
             lines.push(row("tamaño", human(d.size)));
             lines.push(row("dueño", d.owner.clone()));
+            if let Some(u) = app.db_marks.last_use(&d.name) {
+                let when = crate::dbmarks::ago(u.at, chrono::Local::now());
+                lines.push(row(
+                    "usada",
+                    widgets::truncate(
+                        &format!("{when} · {}", u.what),
+                        (inner.width as usize).saturating_sub(12),
+                    ),
+                ));
+            }
             match app.inst_db.as_deref() {
                 Some(db) if db == d.name => lines.push(Line::from(vec![
                     Span::styled(format!(" {:<10}", "instancia"), Style::new().fg(t.dim)),

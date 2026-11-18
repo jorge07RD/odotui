@@ -17,7 +17,7 @@ TUI abierta, se ven en su pestaña.
 
 | Herramienta | Argumentos | Devuelve |
 |---|---|---|
-| `list_databases` | — | BDs con versión de Odoo (`—` = no es de Odoo), tamaño y dueño |
+| `list_databases` | — | BDs con versión de Odoo (`—` = no es de Odoo), tamaño y dueño. Primero las favoritas del usuario (`★`) y luego la usada más recientemente (`usada=hace 2 h (conectar)`): «mi BD» o «la de siempre» suele ser la primera |
 | `list_backups` | — | Backups en `backups_dir`: `.zip` de Odoo, `.dump`, `.sql(.gz)`, carpetas con `dump.sql` |
 | `list_modules` | `database*`, `filter`, `state` | Módulos con estado, versión y nombre visible («Facturación»). `filter` busca todas las palabras en nombre técnico, nombre visible, categoría y resumen (sin tildes) y ordena los mejores primero: sirve para «el módulo de facturación» sin saber su nombre técnico |
 | `read_logs` | `lines` (200), `filter`, `errors_only`, `since` | Log del servidor. `errors_only` = cada error con su traceback. `since` = solo lo nuevo (lo devuelve cada lectura) |

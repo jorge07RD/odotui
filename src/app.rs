@@ -25,6 +25,7 @@ use crate::{
         tools,
     },
     config::{Config, Profile},
+    dbmarks,
     exec::{self, Spec, Stop},
     form::{self, Form, Target},
     history::{self, Entry},
@@ -183,6 +184,12 @@ pub struct App {
     intro_on: bool,
     /// Pestañas ya vistas: la primera visita a cada una se anima.
     seen: Vec<Tab>,
+    /// Favoritas y último uso de las BDs del perfil (ver `dbmarks`).
+    pub db_marks: dbmarks::Marks,
+    /// Cuándo cambió `dbs.json` al leerlo (otro proceso, p. ej. la IA, lo toca).
+    marks_stamp: Option<SystemTime>,
+    /// `false` en las pruebas: las marcas no se guardan en disco.
+    persist_marks: bool,
     pub history: Vec<Entry>,
     /// Para el bucle principal (se vacía en cada vuelta).
     pub effects: Vec<Effect>,
@@ -264,6 +271,9 @@ impl App {
             intro,
             intro_on,
             seen: vec![Tab::Dbs],
+            db_marks: dbmarks::Marks::default(),
+            marks_stamp: None,
+            persist_marks: true,
             history: history::load(),
             effects: vec![],
         }
@@ -291,6 +301,8 @@ impl App {
         app.history.clear();
         app.intro = None;
         app.intro_on = false;
+        app.persist_marks = false;
+        app.db_marks = dbmarks::Marks::default();
         let db = |name: &str, version: Option<&str>| DbInfo {
             name: name.into(),
             size: 50 << 20,
@@ -328,6 +340,7 @@ impl App {
 
     /// Primera carga: sin perfiles se abre directamente el formulario.
     pub fn start(&mut self) {
+        self.reload_marks(true);
         if self.cfg.profiles.is_empty() {
             self.set_tab(Tab::Profiles);
             self.form = Some(Form::profile(None, &Profile::default()));
@@ -408,10 +421,74 @@ impl App {
 
     // ── filas visibles (índices tras el filtro) ──────────────────────────
 
+    /// Filtradas; primero las favoritas y luego la usada más recientemente.
     pub fn db_rows(&self) -> Vec<usize> {
-        (0..self.dbs.len())
+        let mut rows: Vec<usize> = (0..self.dbs.len())
             .filter(|&i| self.db_list.matches(&self.dbs[i].name))
-            .collect()
+            .collect();
+        rows.sort_by(|&a, &b| self.db_marks.order(&self.dbs[a].name, &self.dbs[b].name));
+        rows
+    }
+
+    /// Cambia las marcas (y las guarda); la BD seleccionada sigue siéndolo
+    /// aunque cambie de puesto.
+    fn edit_marks(&mut self, f: impl FnOnce(&mut dbmarks::Marks)) {
+        let keep = self.selected_db().map(|d| d.name.clone());
+        match self.current().map(|p| p.name.clone()) {
+            Some(profile) if self.persist_marks => {
+                self.db_marks = dbmarks::edit(&profile, f);
+                self.marks_stamp = dbmarks::stamp();
+            }
+            _ => f(&mut self.db_marks),
+        }
+        if let Some(name) = keep {
+            self.select_db(&name);
+        }
+    }
+
+    fn select_db(&mut self, name: &str) {
+        if let Some(pos) = self
+            .db_rows()
+            .iter()
+            .position(|&i| self.dbs[i].name == name)
+        {
+            self.db_list.sel = pos;
+        }
+    }
+
+    fn toggle_favorite(&mut self, db: &str) {
+        let mut on = false;
+        self.edit_marks(|m| on = m.toggle_favorite(db));
+        self.toast(if on {
+            format!("★ «{db}» es favorita")
+        } else {
+            format!("«{db}» ya no es favorita")
+        });
+    }
+
+    /// Anota que se usó `db` (para el orden de la lista).
+    fn touch_db(&mut self, db: &str, what: &str) {
+        self.edit_marks(|m| m.touch(db, what));
+    }
+
+    /// Relee las marcas si otro las cambió (la IA, otra TUI).
+    fn reload_marks(&mut self, force: bool) {
+        if !self.persist_marks {
+            return;
+        }
+        let stamp = dbmarks::stamp();
+        if !force && stamp == self.marks_stamp {
+            return;
+        }
+        let Some(profile) = self.current().map(|p| p.name.clone()) else {
+            return;
+        };
+        let keep = self.selected_db().map(|d| d.name.clone());
+        self.db_marks = dbmarks::load(&profile);
+        self.marks_stamp = stamp;
+        if let Some(name) = keep {
+            self.select_db(&name);
+        }
     }
 
     pub fn backup_rows(&self) -> Vec<usize> {
@@ -853,6 +930,8 @@ impl App {
         self.inst_log.clear();
         self.restore_target = None;
         let name = self.cfg.profiles[i].name.clone();
+        self.db_list.sel = 0;
+        self.reload_marks(true);
         self.toast(format!("perfil: {name}"));
         self.refresh_dbs();
         self.refresh_backups();
@@ -878,6 +957,13 @@ impl App {
                 self.mod_list.sel = i;
                 self.toggle_mark();
             }
+            Action::Toggle(Pane::DbList, i) => {
+                self.focus = Pane::DbList;
+                self.db_list.sel = i;
+                if let Some(db) = self.selected_db().map(|d| d.name.clone()) {
+                    self.toggle_favorite(&db);
+                }
+            }
             Action::Toggle(..) => {}
             Action::ModView(v) => self.set_mod_view(v),
             Action::Focus(p) => self.focus = p,
@@ -897,6 +983,8 @@ impl App {
                     && let Some(u) = pick.users.get(i)
                 {
                     let (db, id) = (pick.db.clone(), u.id);
+                    let what = format!("conectar como {}", u.login);
+                    self.touch_db(&db, &what);
                     self.connect(db, Some(id));
                 }
             }
@@ -1078,6 +1166,14 @@ impl App {
                 } else {
                     Ok(pg::psql(&p, &db.name))
                 };
+                if spec.is_ok() {
+                    let what = if c == Cmd::DbShell {
+                        "odoo shell"
+                    } else {
+                        "psql"
+                    };
+                    self.touch_db(&db.name, what);
+                }
                 match spec {
                     Ok(spec) => self.effects.push(Effect::Interactive {
                         spec,
@@ -1162,6 +1258,11 @@ impl App {
                     Err(e) => self.toast(format!("✗ {e}")),
                 }
             }
+            Cmd::DbFavorite => {
+                if let Some(db) = self.selected_db().map(|d| d.name.clone()) {
+                    self.toggle_favorite(&db);
+                }
+            }
             Cmd::DbRunOnly => {
                 let Some(db) = self.selected_db().cloned() else {
                     return;
@@ -1180,6 +1281,7 @@ impl App {
                 } else {
                     "start"
                 };
+                self.touch_db(&db.name, "correr solo esta");
                 self.run_instance(verb, Dbs::Only(db.name), &p);
             }
             Cmd::InstAllDbs => {
@@ -1196,6 +1298,7 @@ impl App {
                     return self.toast("no es una BD de Odoo");
                 }
                 if c == Cmd::DbLogin {
+                    self.touch_db(&db.name, "conectar");
                     return self.connect(db.name, None);
                 }
                 let (tx, g) = (self.tx.clone(), self.generation);
@@ -1325,6 +1428,14 @@ impl App {
         let Some(db) = self.mod_db.clone() else {
             return self.toast("elige una BD");
         };
+        self.touch_db(
+            &db,
+            if install {
+                "instalar módulos"
+            } else {
+                "actualizar módulos"
+            },
+        );
         self.mod_log.clear();
         self.focus = Pane::ModLog;
         let verb = if install {
@@ -1549,6 +1660,7 @@ impl App {
                         tx.log(format!("▶ renombrando «{from}» → «{to}»"));
                         pg::rename(&p, &from, &to).await?;
                         filestore::rename(&p, &from, &to, &tx).await?;
+                        crate::dbmarks::rename(&p.name, &from, &to);
                         Ok(format!("«{from}» ahora es «{to}»"))
                     }
                 });
@@ -1588,6 +1700,7 @@ impl App {
     }
 
     fn start_restore(&mut self, req: Request) {
+        self.touch_db(&req.db, "restaurar");
         self.set_tab(Tab::Restore);
         self.restore_log.clear();
         self.focus = Pane::RestoreLog;
@@ -1616,6 +1729,7 @@ impl App {
                         tx.log(format!("▶ borrando «{db}»"));
                         pg::drop(&p, &db).await?;
                         filestore::remove(&p, &db, &tx).await?;
+                        crate::dbmarks::forget(&p.name, &db);
                         Ok(format!("«{db}» borrada"))
                     }
                 });
@@ -1625,6 +1739,7 @@ impl App {
                 let Some(p) = self.current().cloned() else {
                     return;
                 };
+                self.touch_db(&db, "desinstalar módulos");
                 self.mod_log.clear();
                 self.focus = Pane::ModLog;
                 self.spawn_busy(
@@ -1905,6 +2020,7 @@ impl App {
             ("BDs: psql en la seleccionada", Cmd::DbPsql),
             ("BDs: conectar como administrador", Cmd::DbLogin),
             ("BDs: conectar como…", Cmd::DbLoginAs),
+            ("BDs: favorita sí/no", Cmd::DbFavorite),
             ("BDs: correr Odoo solo con la seleccionada", Cmd::DbRunOnly),
             ("Instancia: correr con todas las BDs", Cmd::InstAllDbs),
             (
@@ -2154,6 +2270,7 @@ impl App {
             (Tab::Dbs, KeyCode::Char('o')) => Cmd::DbLogin,
             (Tab::Dbs, KeyCode::Char('O')) => Cmd::DbLoginAs,
             (Tab::Dbs, KeyCode::Char('i')) => Cmd::DbRunOnly,
+            (Tab::Dbs, KeyCode::Char('*')) => Cmd::DbFavorite,
             (Tab::Instance, KeyCode::Char('a')) => Cmd::InstAllDbs,
             (Tab::Restore, KeyCode::Char('r')) => Cmd::Refresh,
             (Tab::Restore, KeyCode::Char('R')) => Cmd::Restore,
@@ -2305,6 +2422,9 @@ impl App {
         }
         if self.ticks.is_multiple_of(20) && self.tab == Tab::Instance {
             self.refresh_status();
+        }
+        if self.ticks.is_multiple_of(4) {
+            self.reload_marks(false);
         }
         if self.ticks.is_multiple_of(4) && self.cfg.theme.as_deref().is_none_or(|t| t == "omarchy")
         {
