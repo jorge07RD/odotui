@@ -204,6 +204,8 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
             .enabled(idle && running)
             .danger(),
         Btn::new("R", "Reiniciar", Action::Cmd(Cmd::InstRestart)).enabled(idle),
+        // Como en producción: Odoo con una sola BD (elige cuál).
+        Btn::new("i", "Una BD…", Action::Cmd(Cmd::InstRunOnly)).enabled(idle && local),
     ];
     // Solo cuando corre con una BD: volver a todas.
     if app.inst_db.is_some() {

@@ -218,6 +218,7 @@ Los backups nuevos se llaman `<bd>_<AAAA-MM-DD_HHMM>.zip` y se escriben con un n
 | botón Backup | `b` (BDs) | backup zip o dump de la BD |
 | clic en ☆ | `*` (BDs) | BD favorita sí/no: las favoritas van arriba |
 | botón Correr solo esta · Todas | `i` (BDs) · `a` (Instancia) | Odoo solo con la BD seleccionada · con todas otra vez |
+| botón Una BD… | `i` (Instancia) | Odoo solo con la BD que elijas en un selector con filtro (o con todas) |
 | botón Conectar · Como… | `o` · `O` (BDs) | entrar en Odoo como administrador · eligiendo el usuario |
 | — | `S` · `P` (BDs) | `odoo shell` · `psql` sobre la BD |
 | botón Cambiados · Desinstalar | `U` · `d` (Módulos) | actualizar los addons con ⟳ · desinstalar |

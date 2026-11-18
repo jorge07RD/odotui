@@ -148,6 +148,8 @@ pub enum Cmd {
     DbRunOnly,
     /// (Re)inicia Odoo con todas las BDs.
     InstAllDbs,
+    /// Desde Instancia: elegir la BD con la que (re)iniciar Odoo solo.
+    InstRunOnly,
     Restore,
     InstStart,
     InstStop,
@@ -201,6 +203,8 @@ pub enum Action {
     LoginAs(usize),
     /// Chip de Módulos: qué módulos ver.
     ModView(ModView),
+    /// Correr Odoo con la opción n.º tal de `App::db_pick`.
+    RunDb(usize),
     Help,
     Palette,
     Close,

@@ -98,6 +98,8 @@ pub struct Palette {
     pub offset: usize,
     /// Elige un usuario de `App::login_pick` en vez de un comando.
     pub users: bool,
+    /// Elige la BD de `App::db_pick` con la que correr Odoo.
+    pub dbs: bool,
 }
 
 /// Usuarios de una BD para «Conectar como…».
@@ -124,6 +126,8 @@ pub struct App {
     pub help: bool,
     pub palette: Option<Palette>,
     pub login_pick: Option<LoginPick>,
+    /// Opciones de «correr solo con…» desde Instancia; `None` = todas.
+    pub db_pick: Vec<Option<String>>,
     /// BD en la que se está creando una sesión («Conectar»).
     pub connecting: Option<String>,
     pub form: Option<Form>,
@@ -228,6 +232,7 @@ impl App {
             help: false,
             palette: None,
             login_pick: None,
+            db_pick: vec![],
             connecting: None,
             form: None,
             confirm: None,
@@ -1002,6 +1007,13 @@ impl App {
                     }
                 }
             }
+            Action::RunDb(i) => {
+                if let (Some(choice), Some(p)) =
+                    (self.db_pick.get(i).cloned(), self.current().cloned())
+                {
+                    self.run_only(choice, &p);
+                }
+            }
             Action::LoginAs(i) => {
                 if let Some(pick) = &self.login_pick
                     && let Some(u) = pick.users.get(i)
@@ -1294,26 +1306,37 @@ impl App {
                 if db.version.is_none() {
                     return self.toast("no es una BD de Odoo");
                 }
+                self.run_only(Some(db.name), &p);
+            }
+            Cmd::InstRunOnly => {
                 if p.is_docker() {
                     return self.toast("solo en perfiles local: en docker va en el compose");
                 }
-                if self.inst_db.as_deref() == Some(&db.name) {
-                    return self.toast(format!("Odoo ya corre solo con «{}»", db.name));
+                // La que corre sola primero, luego las demás de Odoo y al
+                // final «todas».
+                let mut pick: Vec<Option<String>> = vec![];
+                if let Some(db) = &self.inst_db {
+                    pick.push(Some(db.clone()));
                 }
-                let verb = if self.inst_status == "running" {
-                    "restart"
-                } else {
-                    "start"
-                };
-                self.touch_db(&db.name, "correr solo esta");
-                self.run_instance(verb, Dbs::Only(db.name), &p);
-            }
-            Cmd::InstAllDbs => {
-                if self.inst_db.is_none() {
-                    return self.toast("Odoo ya corre con todas las BDs");
+                // Las demás: favoritas y recientes primero, como en BDs.
+                let mut others = self.odoo_dbs();
+                others.sort_by(|a, b| self.db_marks.order(a, b));
+                for db in others {
+                    if self.inst_db.as_deref() != Some(db) {
+                        pick.push(Some(db.to_string()));
+                    }
                 }
-                self.run_instance("restart", Dbs::All, &p);
+                if pick.is_empty() {
+                    return self.toast("no hay BDs de Odoo en este perfil");
+                }
+                pick.push(None);
+                self.db_pick = pick;
+                self.palette = Some(Palette {
+                    dbs: true,
+                    ..Palette::default()
+                });
             }
+            Cmd::InstAllDbs => self.run_only(None, &p),
             Cmd::DbLogin | Cmd::DbLoginAs => {
                 let Some(db) = self.selected_db().cloned() else {
                     return;
@@ -1507,6 +1530,33 @@ impl App {
             Dbs::All
         } else {
             Dbs::Same
+        };
+        self.run_instance(verb, dbs, p);
+    }
+
+    /// (Re)inicia Odoo solo con `db`, o con todas (`None`): arranca si está
+    /// detenido y reinicia si corre.
+    fn run_only(&mut self, db: Option<String>, p: &Profile) {
+        if db.is_some() && p.is_docker() {
+            return self.toast("solo en perfiles local: en docker va en el compose");
+        }
+        let running = self.inst_status == "running";
+        match &db {
+            Some(d) if self.inst_db.as_deref() == Some(d) => {
+                return self.toast(format!("Odoo ya corre solo con «{d}»"));
+            }
+            None if running && self.inst_db.is_none() => {
+                return self.toast("Odoo ya corre con todas las BDs");
+            }
+            _ => {}
+        }
+        let verb = if running { "restart" } else { "start" };
+        let dbs = match db {
+            Some(d) => {
+                self.touch_db(&d, "correr solo esta");
+                Dbs::Only(d)
+            }
+            None => Dbs::All,
         };
         self.run_instance(verb, dbs, p);
     }
@@ -2021,6 +2071,30 @@ impl App {
     // ── paleta de comandos ───────────────────────────────────────────────
 
     pub fn palette_items(&self) -> Vec<(String, Action)> {
+        if self.palette.as_ref().is_some_and(|p| p.dbs) {
+            // La que corre sola, primero; el orden se decide al dibujar, con
+            // el estado más reciente (puede llegar después de abrir esto).
+            let mut order: Vec<(usize, &Option<String>)> =
+                self.db_pick.iter().enumerate().collect();
+            order.sort_by_key(|(_, c)| c.is_none() || c.as_deref() != self.inst_db.as_deref());
+            let all = order
+                .into_iter()
+                .map(|(i, c)| {
+                    let label = match c {
+                        Some(db) if self.inst_db.as_deref() == Some(db) => {
+                            format!("● {db}   corriendo sola")
+                        }
+                        Some(db) => format!("  {db}"),
+                        None if self.inst_db.is_none() && self.inst_status == "running" => {
+                            "  Todas las BDs   así corre ahora".to_string()
+                        }
+                        None => "  Todas las BDs".to_string(),
+                    };
+                    (label, Action::RunDb(i))
+                })
+                .collect();
+            return self.palette_filter(all);
+        }
         if self.palette.as_ref().is_some_and(|p| p.users) {
             let users = self.login_pick.iter().flat_map(|p| p.users.iter());
             let all = users
@@ -2047,6 +2121,7 @@ impl App {
             ("BDs: favorita sí/no", Cmd::DbFavorite),
             ("BDs: correr Odoo solo con la seleccionada", Cmd::DbRunOnly),
             ("Instancia: correr con todas las BDs", Cmd::InstAllDbs),
+            ("Instancia: correr solo con una BD…", Cmd::InstRunOnly),
             (
                 "BDs: restaurar un backup sobre la seleccionada",
                 Cmd::DbRestoreHere,
@@ -2296,6 +2371,7 @@ impl App {
             (Tab::Dbs, KeyCode::Char('i')) => Cmd::DbRunOnly,
             (Tab::Dbs, KeyCode::Char('*')) => Cmd::DbFavorite,
             (Tab::Instance, KeyCode::Char('a')) => Cmd::InstAllDbs,
+            (Tab::Instance, KeyCode::Char('i')) => Cmd::InstRunOnly,
             (Tab::Restore, KeyCode::Char('r')) => Cmd::Refresh,
             (Tab::Restore, KeyCode::Char('R')) => Cmd::Restore,
             (Tab::Instance, KeyCode::Char('s')) => Cmd::InstStart,

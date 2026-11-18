@@ -387,3 +387,53 @@ fn running_odoo_is_visible_everywhere() {
     let (ox, oy) = find(&buf, " abrir ", Some(y2)).unwrap();
     assert_eq!(app.hits.at(ox + 1, oy), Some(Action::OpenRunning(1)));
 }
+
+#[test]
+fn run_one_database_from_instance() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let mut app = App::for_tests();
+    app.tab = Tab::Instance;
+    app.inst_status = "running".into();
+    app.inst_db = Some("acme_staging".into());
+    let buf = render(&mut app);
+    assert_eq!(
+        hit(&app, &buf, "Una BD…", None),
+        Some(Action::Cmd(Cmd::InstRunOnly))
+    );
+
+    // i: elegir entre las BDs de Odoo (postgres no), la que corre sola
+    // primero y «todas» al final.
+    app.on_event(Event::Key(KeyEvent::new(
+        KeyCode::Char('i'),
+        KeyModifiers::NONE,
+    )));
+    let labels: Vec<String> = app
+        .palette_items()
+        .into_iter()
+        .map(|(l, _)| l.trim().to_string())
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "● acme_staging   corriendo sola",
+            "acme_prod",
+            "Todas las BDs"
+        ]
+    );
+    let buf = render(&mut app);
+    assert!(find(&buf, "Correr Odoo solo con", None).is_some());
+
+    // Si se abrió antes de saber con cuál corre, al llegar el dato se reordena.
+    app.inst_db = None;
+    app.apply(Action::Cmd(Cmd::InstRunOnly));
+    app.inst_db = Some("acme_staging".into());
+    assert!(app.palette_items()[0].0.contains("● acme_staging"));
+
+    // Filtrar y elegir la que ya corre sola: solo avisa, no reinicia.
+    app.palette.as_mut().unwrap().query = "stag".into();
+    let items = app.palette_items();
+    assert_eq!(items.len(), 1);
+    app.apply(items[0].1);
+    assert!(app.busy.is_none());
+    assert!(app.toast.as_ref().unwrap().0.contains("ya corre solo"));
+}
