@@ -51,6 +51,8 @@ La barra muestra el avance real. Abajo está el historial (las restauraciones de
 | Tecla | Acción |
 |---|---|
 | `s` · `t` · `R` | Iniciar · parar · reiniciar Odoo |
+| `i` | Correr Odoo con una sola BD, como en producción: selector con filtro (la que corre sola primero, «Todas las BDs» al final) |
+| `a` | Volver a todas las BDs |
 | `L` | Seguir o dejar el log |
 | `v` | `--dev=all` (solo local, al próximo inicio) |
 | `o` | Abrir Odoo en el navegador |

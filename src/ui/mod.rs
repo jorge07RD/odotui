@@ -424,7 +424,10 @@ fn draw_help(f: &mut Frame, app: &App, hits: &mut HitMap) {
             "o  O",
             "entrar en Odoo como admin · como otro usuario (BDs)",
         ),
-        item("i  a", "Odoo solo con la BD (BDs) · con todas (Instancia)"),
+        item(
+            "i  a",
+            "Odoo solo con una BD (en BDs, la seleccionada) · con todas (Instancia)",
+        ),
         item("S  P", "odoo shell · psql en la BD (BDs)"),
         item("U  d", "actualizar cambiados · desinstalar (Módulos)"),
         item("X", "cancelar la tarea en curso"),
@@ -466,6 +469,7 @@ fn draw_palette(f: &mut Frame, app: &App, hits: &mut HitMap) {
         app,
         Line::styled(
             match (&app.login_pick, pal.users) {
+                _ if pal.dbs => " Correr Odoo solo con… ".to_string(),
                 (Some(pick), true) => format!(" Conectar a {} como… ", pick.db),
                 _ => " Comandos ".to_string(),
             },

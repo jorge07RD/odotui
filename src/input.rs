@@ -96,6 +96,8 @@ pub enum Cmd {
     DbRunOnly,
     /// (Re)inicia Odoo con todas las BDs.
     InstAllDbs,
+    /// Desde Instancia: elegir la BD con la que (re)iniciar Odoo solo.
+    InstRunOnly,
     Restore,
     InstStart,
     InstStop,
@@ -141,6 +143,8 @@ pub enum Action {
     Cmd(Cmd),
     /// Entrar como el usuario n.º tal del selector (`App::login_pick`).
     LoginAs(usize),
+    /// Correr Odoo con la opción n.º tal de `App::db_pick`.
+    RunDb(usize),
     Help,
     Palette,
     Close,
