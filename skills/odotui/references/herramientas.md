@@ -19,7 +19,7 @@ TUI abierta, se ven en su pestaña.
 |---|---|---|
 | `list_databases` | — | BDs con versión de Odoo (`—` = no es de Odoo), tamaño y dueño |
 | `list_backups` | — | Backups en `backups_dir`: `.zip` de Odoo, `.dump`, `.sql(.gz)`, carpetas con `dump.sql` |
-| `list_modules` | `database*`, `filter`, `state` | Módulos con estado, versión y si el código cambió (⟳) |
+| `list_modules` | `database*`, `filter`, `state` | Módulos con estado, versión y nombre visible («Facturación»). `filter` busca todas las palabras en nombre técnico, nombre visible, categoría y resumen (sin tildes) y ordena los mejores primero: sirve para «el módulo de facturación» sin saber su nombre técnico |
 | `read_logs` | `lines` (200), `filter`, `errors_only`, `since` | Log del servidor. `errors_only` = cada error con su traceback. `since` = solo lo nuevo (lo devuelve cada lectura) |
 | `describe_model` | `database*`, `model*` | Campos: tipo, relación, required, store, compute y módulo que lo define |
 | `find_views` | `database*`, `model` o `xml_id` | Vistas con xml_id, tipo, prioridad y herencia |

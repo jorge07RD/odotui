@@ -28,7 +28,7 @@ use crate::{
     exec::{self, Spec, Stop},
     form::{self, Form, Target},
     history::{self, Entry},
-    input::{Action, Cmd, HitMap, Pane, Tab},
+    input::{Action, Cmd, HitMap, ModView, Pane, Tab},
     jobs::{AiRequest, Ev, Progress, Sink, Tx},
     log::{ListState, LogView},
     odoo::{
@@ -167,6 +167,8 @@ pub struct App {
     pub mods_err: Option<String>,
     pub mod_list: ListState,
     pub marks: BTreeSet<String>,
+    /// Chip elegido en Módulos.
+    pub mod_view: ModView,
     pub mod_log: LogView,
 
     pub prof_list: ListState,
@@ -250,6 +252,7 @@ impl App {
             mods_err: None,
             mod_list: ListState::default(),
             marks: BTreeSet::new(),
+            mod_view: ModView::default(),
             mod_log: LogView::default(),
             prof_list: ListState {
                 sel: profile,
@@ -304,8 +307,8 @@ impl App {
             name: name.into(),
             state: state.into(),
             version: "17.0.1.0".into(),
-            application: false,
             disk: disk.map(String::from),
+            ..Default::default()
         };
         app.modules = vec![
             m("acme_ventas", "installed", Some("17.0.1.1")),
@@ -417,15 +420,34 @@ impl App {
             .collect()
     }
 
+    fn set_mod_view(&mut self, v: ModView) {
+        self.mod_view = v;
+        self.focus = Pane::ModList;
+        self.mod_list.sel = 0;
+        self.mod_list.offset = 0;
+    }
+
+    /// Si `m` entra en el chip elegido.
+    pub fn in_view(&self, m: &ModuleInfo, view: ModView) -> bool {
+        match view {
+            ModView::All => true,
+            ModView::Installed => m.state == "installed",
+            ModView::Own => m.disk.is_some(),
+            ModView::Changed => m.changed(),
+            ModView::Available => m.state == "uninstalled",
+        }
+    }
+
+    /// Los del chip que coinciden con la búsqueda; con búsqueda, los mejores
+    /// primero (ver `ModuleInfo::score`).
     pub fn module_rows(&self) -> Vec<usize> {
-        (0..self.modules.len())
-            .filter(|&i| {
-                let m = &self.modules[i];
-                let changed = if m.changed() { " cambió" } else { "" };
-                self.mod_list
-                    .matches(&format!("{} {}{changed}", m.name, m.state))
-            })
-            .collect()
+        let words = modules::search_words(&self.mod_list.filter);
+        let mut rows: Vec<(u8, usize)> = (0..self.modules.len())
+            .filter(|&i| self.in_view(&self.modules[i], self.mod_view))
+            .filter_map(|i| Some((self.modules[i].score(&words)?, i)))
+            .collect();
+        rows.sort_by(|a, b| (a.0, &self.modules[a.1].name).cmp(&(b.0, &self.modules[b.1].name)));
+        rows.into_iter().map(|(_, i)| i).collect()
     }
 
     fn rows_len(&self, pane: Pane) -> usize {
@@ -857,6 +879,7 @@ impl App {
                 self.toggle_mark();
             }
             Action::Toggle(..) => {}
+            Action::ModView(v) => self.set_mod_view(v),
             Action::Focus(p) => self.focus = p,
             Action::Filter(p) => {
                 self.focus = p;
@@ -1202,6 +1225,13 @@ impl App {
             }
             Cmd::ModToggle => self.toggle_mark(),
             Cmd::ModClear => self.marks.clear(),
+            Cmd::ModNextView => self.set_mod_view(self.mod_view.next()),
+            Cmd::ModSearch => {
+                if self.tab != Tab::Modules {
+                    self.set_tab(Tab::Modules);
+                }
+                self.apply(Action::Filter(Pane::ModList));
+            }
             Cmd::ModUpdateChanged => {
                 let names: Vec<String> = self
                     .modules
@@ -1897,6 +1927,11 @@ impl App {
             ),
             ("Módulos: desinstalar marcados", Cmd::ModUninstall),
             ("Módulos: desmarcar todo", Cmd::ModClear),
+            ("Módulos: buscar", Cmd::ModSearch),
+            (
+                "Módulos: siguiente vista (todos, instalados, propios…)",
+                Cmd::ModNextView,
+            ),
             ("Perfiles: nuevo", Cmd::ProfNew),
             ("Perfiles: editar seleccionado", Cmd::ProfEdit),
             ("Perfiles: probar conexión", Cmd::ProfTest),
@@ -2136,6 +2171,7 @@ impl App {
             (Tab::Modules, KeyCode::Char('U')) => Cmd::ModUpdateChanged,
             (Tab::Modules, KeyCode::Char('d')) => Cmd::ModUninstall,
             (Tab::Modules, KeyCode::Char('x')) => Cmd::ModClear,
+            (Tab::Modules, KeyCode::Char('s')) => Cmd::ModNextView,
             (Tab::Modules, KeyCode::Char('b')) => Cmd::ModDb(1),
             (Tab::Modules, KeyCode::Char('B')) => Cmd::ModDb(-1),
             (Tab::Profiles, KeyCode::Char('a')) => Cmd::ProfNew,
@@ -2153,7 +2189,13 @@ impl App {
             self.filtering = None;
             return;
         };
+        let list = matches!(pane, Pane::DbList | Pane::Backups | Pane::ModList);
         match k.code {
+            // En una lista, ↑↓ eligen fila sin dejar de escribir.
+            KeyCode::Up | KeyCode::Down if list => {
+                self.focus = pane;
+                return self.move_focus(if k.code == KeyCode::Up { -1 } else { 1 });
+            }
             KeyCode::Esc => {
                 f.clear();
                 self.filtering = None;

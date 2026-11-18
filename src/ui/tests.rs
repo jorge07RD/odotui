@@ -275,3 +275,51 @@ fn run_one_database() {
         Some(Action::Cmd(Cmd::InstAllDbs))
     );
 }
+
+#[test]
+fn module_search_bar_and_chips() {
+    use crate::input::ModView;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let mut app = App::for_tests();
+    app.tab = Tab::Modules;
+    app.focus = Pane::ModList;
+    app.modules[2].title = "Ventas".into();
+    let names = |app: &App| -> Vec<String> {
+        app.module_rows()
+            .iter()
+            .map(|&i| app.modules[i].name.clone())
+            .collect()
+    };
+    let key =
+        |app: &mut App, code| app.on_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+
+    // Siempre visible, con su ayuda; un clic empieza a escribir.
+    let buf = render(&mut app);
+    let (x, y) = find(&buf, "Buscar módulo", None).unwrap();
+    assert_eq!(app.hits.at(x, y), Some(Action::Filter(Pane::ModList)));
+    click(&mut app, x, y);
+    assert_eq!(app.filtering, Some(Pane::ModList));
+
+    // «ventas»: sale primero (su título es exactamente «Ventas»), luego
+    // acme_ventas (lo lleva dentro del nombre).
+    for c in "ventas".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+    assert_eq!(names(&app), ["sale", "acme_ventas"]);
+    let buf = render(&mut app);
+    assert!(find(&buf, "2 de 3", None).is_some());
+
+    // ↓ elige la siguiente sin dejar de escribir.
+    key(&mut app, KeyCode::Down);
+    assert_eq!(app.filtering, Some(Pane::ModList));
+    assert_eq!(app.selected_module().unwrap().name, "acme_ventas");
+
+    // Chip «Cambiados»: solo acme_ventas (su código cambió).
+    key(&mut app, KeyCode::Enter);
+    let buf = render(&mut app);
+    // Con nombre largo o corto («⟳ Camb.»), según el ancho.
+    let (cx, cy) = find(&buf, "⟳ Camb", None).unwrap();
+    assert_eq!(app.hits.at(cx, cy), Some(Action::ModView(ModView::Changed)));
+    click(&mut app, cx, cy);
+    assert_eq!(names(&app), ["acme_ventas"]);
+}

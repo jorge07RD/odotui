@@ -3,6 +3,56 @@
 
 use ratatui::layout::{Position, Rect};
 
+/// Qué módulos ver en Módulos (los chips sobre la lista).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModView {
+    #[default]
+    All,
+    Installed,
+    /// Addons propios (están en addons_dir).
+    Own,
+    /// Propios cuyo código cambió sin actualizar.
+    Changed,
+    /// No instalados.
+    Available,
+}
+
+impl ModView {
+    pub const ALL: [ModView; 5] = [
+        ModView::All,
+        ModView::Installed,
+        ModView::Own,
+        ModView::Changed,
+        ModView::Available,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ModView::All => "Todos",
+            ModView::Installed => "Instalados",
+            ModView::Own => "Propios",
+            ModView::Changed => "Cambiados",
+            ModView::Available => "Disponibles",
+        }
+    }
+
+    /// Para cuando no caben todos.
+    pub fn short(self) -> &'static str {
+        match self {
+            ModView::All => "Todos",
+            ModView::Installed => "Inst.",
+            ModView::Own => "Propios",
+            ModView::Changed => "Camb.",
+            ModView::Available => "Disp.",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|v| *v == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Dbs,
@@ -112,6 +162,10 @@ pub enum Cmd {
     ModUpdateChanged,
     ModUninstall,
     ModClear,
+    /// Siguiente chip de Módulos (Todos → Instalados → …).
+    ModNextView,
+    /// Ir a la barra de búsqueda de Módulos.
+    ModSearch,
     /// Copia el último error (con su traceback) del log.
     CopyError,
     /// Solo errores en el log, on/off.
@@ -141,6 +195,8 @@ pub enum Action {
     Cmd(Cmd),
     /// Entrar como el usuario n.º tal del selector (`App::login_pick`).
     LoginAs(usize),
+    /// Chip de Módulos: qué módulos ver.
+    ModView(ModView),
     Help,
     Palette,
     Close,

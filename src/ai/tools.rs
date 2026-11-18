@@ -117,7 +117,7 @@ pub fn definitions() -> Vec<Value> {
             "Lista los módulos de una BD con estado (installed, uninstalled, to upgrade…) y versión.",
             json!({
                 "database": db,
-                "filter": {"type": "string", "description": "Texto a buscar en el nombre"},
+                "filter": {"type": "string", "description": "Palabras a buscar (todas) en el nombre técnico, el nombre visible («Ventas»), la categoría o el resumen; sin tildes ni mayúsculas. Los mejores primero"},
                 "state": {"type": "string", "description": "Solo este estado, p. ej. installed"},
             }),
             &["database"],
@@ -470,18 +470,26 @@ async fn run(
         }
         "list_modules" => {
             let db = db_arg(args, "database")?;
-            let filter = opt_str(args, "filter").unwrap_or_default().to_lowercase();
+            // La misma búsqueda que la TUI: nombre, título, categoría y
+            // resumen; los mejores primero.
+            let words = modules::search_words(&opt_str(args, "filter").unwrap_or_default());
             let state = opt_str(args, "state").unwrap_or_default();
-            let ms: Vec<_> = modules::list(p, &db)
+            let mut ms: Vec<_> = modules::list(p, &db)
                 .await?
                 .into_iter()
-                .filter(|m| filter.is_empty() || m.name.contains(&filter))
                 .filter(|m| state.is_empty() || m.state == state)
+                .filter_map(|m| Some((m.score(&words)?, m)))
                 .collect();
+            ms.sort_by(|a, b| (a.0, &a.1.name).cmp(&(b.0, &b.1.name)));
             let mut out = format!("{} módulo(s):\n", ms.len());
-            for m in ms.iter().take(500) {
+            for (_, m) in ms.iter().take(500) {
+                let title = if m.title.is_empty() || m.title == m.name {
+                    String::new()
+                } else {
+                    format!("\t«{}»", m.title)
+                };
                 out += &format!(
-                    "{}\t{}\t{}{}\n",
+                    "{}\t{}\t{}{}{title}\n",
                     m.name,
                     m.state,
                     m.version,

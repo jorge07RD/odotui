@@ -22,7 +22,7 @@ Bases de datos, backups, servidor y módulos: con el mouse, con el teclado o con
 | 🗄️ **Bases de datos** | Lista con tamaño, dueño y versión de Odoo. Duplica, renombra, neutraliza y borra, siempre junto con su filestore. |
 | 💾 **Backups** | Crea `.zip` compatibles con el gestor de Odoo (con filestore y `manifest.json`) o `.dump`, y restaura esos, los de **Odoo.sh**, `.sql`, `.sql.gz` y carpetas `dump.sql`. **Progreso real**, se puede cancelar y neutraliza la copia (sin crons, sin correo, `admin/admin`). |
 | 🖥️ **Instancia** | Inicia, para y reinicia Odoo (contenedor o `odoo-bin`) con el **log en vivo**: colores por nivel, tracebacks resaltados y filtro. |
-| 🧩 **Módulos** | Instala (`-i`), actualiza (`-u`) o desinstala viendo la salida de Odoo. Marca con **⟳** tus addons cuyo código cambió y los actualiza de una vez. |
+| 🧩 **Módulos** | Barra de búsqueda siempre visible: nombre técnico, nombre visible («Facturación»), categoría o resumen, sin tildes, los mejores primero y lo encontrado resaltado; chips Todos · Instalados · Propios · Cambiados · Disponibles. Instala (`-i`), actualiza (`-u`) o desinstala viendo la salida de Odoo. Marca con **⟳** tus addons cuyo código cambió y los actualiza de una vez. |
 | 🎯 **Una sola BD** | `i` en BDs corre Odoo solo con la base seleccionada (`-d` + `--db-filter`): las demás no se ven ni corren sus crons. `a` en Instancia vuelve a todas. |
 | 🔑 **Conectar** | Como en Odoo.sh: `o` abre Odoo en el navegador ya dentro como administrador y `O` deja elegir el usuario. No toca contraseñas. |
 | 🐍 **Shell y psql** | `odoo shell` o `psql` sobre la BD seleccionada, en la misma terminal; al salir vuelves a la TUI. |
@@ -220,7 +220,8 @@ Los backups nuevos se llaman `<bd>_<AAAA-MM-DD_HHMM>.zip` y se escriben con un n
 | botón Conectar · Como… | `o` · `O` (BDs) | entrar en Odoo como administrador · eligiendo el usuario |
 | — | `S` · `P` (BDs) | `odoo shell` · `psql` sobre la BD |
 | botón Cambiados · Desinstalar | `U` · `d` (Módulos) | actualizar los addons con ⟳ · desinstalar |
-| clic en la barra de filtro | `/` · `Esc` | filtrar · borrar el filtro |
+| clic en la barra de filtro | `/` · `Esc` | filtrar (en Módulos, buscar) · borrar el filtro; escribiendo, `↑↓` eligen fila |
+| clic en un chip | `s` (Módulos) | Todos · Instalados · Propios · Cambiados · Disponibles |
 | `≡` | `:` | paleta de comandos (sin importar tildes) |
 | `? ayuda` · `q salir` | `?` · `q` | ayuda · salir |
 

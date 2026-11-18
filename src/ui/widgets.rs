@@ -474,9 +474,68 @@ pub fn cell(s: &str, w: usize) -> String {
     format!("{s}{}", " ".repeat(pad))
 }
 
+/// `text` con las `words` (ya plegadas con `log::fold`) resaltadas, sin
+/// distinguir tildes ni mayúsculas.
+pub fn highlight(text: &str, words: &[String], base: Style, hl: Style) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    // Cada carácter plegado recuerda de qué carácter original viene.
+    let mut folded: Vec<char> = vec![];
+    let mut from: Vec<usize> = vec![];
+    for (i, c) in chars.iter().enumerate() {
+        for f in crate::log::fold(&c.to_string()).chars() {
+            folded.push(f);
+            from.push(i);
+        }
+    }
+    let mut on = vec![false; chars.len()];
+    for w in words {
+        let w: Vec<char> = w.chars().collect();
+        if w.is_empty() || w.len() > folded.len() {
+            continue;
+        }
+        for start in 0..=folded.len() - w.len() {
+            if folded[start..start + w.len()] == w[..] {
+                for k in start..start + w.len() {
+                    on[from[k]] = true;
+                }
+            }
+        }
+    }
+    let mut spans = vec![];
+    let mut i = 0;
+    while i < chars.len() {
+        let lit = on[i];
+        let start = i;
+        while i < chars.len() && on[i] == lit {
+            i += 1;
+        }
+        let piece: String = chars[start..i].iter().collect();
+        spans.push(Span::styled(piece, if lit { hl } else { base }));
+    }
+    spans
+}
+
 /// Celda alineada a la derecha con ancho fijo.
 pub fn rcell(s: &str, w: usize) -> String {
     let s = truncate(s, w);
     let pad = w.saturating_sub(Line::raw(s.as_str()).width());
     format!("{}{s}", " ".repeat(pad))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn highlight_ignores_accents_and_case() {
+        let (b, h) = (Style::new(), Style::new().bold());
+        let spans = highlight("Facturación PC", &["facturacion".into()], b, h);
+        let text: Vec<(&str, bool)> = spans
+            .iter()
+            .map(|s| (s.content.as_ref(), s.style == h))
+            .collect();
+        assert_eq!(text, [("Facturación", true), (" PC", false)]);
+        let spans = highlight("sale_stock", &["stock".into(), "sale".into()], b, h);
+        assert!(spans.iter().all(|s| s.style == h || s.content == "_"));
+    }
 }

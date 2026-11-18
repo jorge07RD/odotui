@@ -62,6 +62,8 @@ y tracebacks con una banda roja.
 
 | Tecla | Acción |
 |---|---|
+| `/` · clic en la barra | Buscar: nombre técnico, nombre visible, categoría o resumen, sin tildes; `↑↓` eligen fila sin dejar de escribir, `Esc` borra |
+| `s` · clic en un chip | Todos · Instalados · Propios · Cambiados · Disponibles |
 | `b` · `B` | BD siguiente · anterior |
 | `Espacio` · clic en `[ ]` | Marcar |
 | `i` · `u` | Instalar · actualizar los marcados (o el seleccionado) |
