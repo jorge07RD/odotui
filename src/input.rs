@@ -139,6 +139,8 @@ pub enum Action {
     /// copia su traceback.
     LogLine(Pane, usize),
     Cmd(Cmd),
+    /// Abrir en el navegador el Odoo n.º tal de `App::running`.
+    OpenRunning(usize),
     /// Entrar como el usuario n.º tal del selector (`App::login_pick`).
     LoginAs(usize),
     Help,

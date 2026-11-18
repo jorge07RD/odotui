@@ -178,10 +178,36 @@ fn draw_header(f: &mut Frame, row: Rect, app: &App, hits: &mut HitMap) {
         }
     }
 
+    // Desde cualquier pestaña: si hay algún Odoo corriendo (de cualquier
+    // perfil o lanzado fuera). Clic: a Instancia.
+    let running = match (app.running.len(), narrow) {
+        (0, true) => vec![Span::styled("○ ", on_bar(t.dim))],
+        (0, false) => vec![Span::styled("○ Odoo ", on_bar(t.dim))],
+        (_, true) => vec![Span::styled("● ", on_bar(t.ok).bold())],
+        (n, false) => widgets::pill(
+            vec![Span::styled(
+                if n == 1 {
+                    format!("● Odoo :{}", app.running[0].port)
+                } else {
+                    format!("● {n} Odoo")
+                },
+                Style::new().fg(t.bg).bold(),
+            )],
+            t.ok,
+            Some(t.bar),
+            app,
+        ),
+    };
+    let run_w = widgets::spans_width(&running);
+    let anchor = if narrow { pill_r.x } else { busy_r.x };
+    let run_r = Rect::new(anchor.saturating_sub(run_w + 1), row.y, run_w, 1);
+    f.render_widget(Line::from(running), run_r);
+    hits.push(run_r, Action::Tab(Tab::Instance));
+
     // Pestañas: la activa es una pastilla de acento.
     let icons = [g.db, g.restore, g.server, g.modules, g.profiles];
     let mut x = row.x + 3 + Line::raw(brand).width() as u16 + 1;
-    let limit = if narrow { pill_r.x } else { busy_r.x };
+    let limit = run_r.x;
     for (i, tab) in Tab::ALL.iter().enumerate() {
         let text = if narrow {
             format!("{} {}", i + 1, icons[i])

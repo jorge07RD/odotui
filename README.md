@@ -21,7 +21,7 @@ Bases de datos, backups, servidor y módulos: con el mouse, con el teclado o con
 |---|---|
 | 🗄️ **Bases de datos** | Lista con tamaño, dueño y versión de Odoo. Duplica, renombra, neutraliza y borra, siempre junto con su filestore. |
 | 💾 **Backups** | Crea `.zip` compatibles con el gestor de Odoo (con filestore y `manifest.json`) o `.dump`, y restaura esos, los de **Odoo.sh**, `.sql`, `.sql.gz` y carpetas `dump.sql`. **Progreso real**, se puede cancelar y neutraliza la copia (sin crons, sin correo, `admin/admin`). |
-| 🖥️ **Instancia** | Inicia, para y reinicia Odoo (contenedor o `odoo-bin`) con el **log en vivo**: colores por nivel, tracebacks resaltados y filtro. |
+| 🖥️ **Instancia** | Inicia, para y reinicia Odoo (contenedor o `odoo-bin`) con el **log en vivo**: colores por nivel, tracebacks resaltados y filtro. Muestra **todos los Odoo que corren en la máquina** (de cualquier perfil, contenedores y los lanzados fuera de odotui) con su puerto y BD, y la cabecera indica desde cualquier pestaña si hay alguno (`● Odoo :8069`). |
 | 🧩 **Módulos** | Instala (`-i`), actualiza (`-u`) o desinstala viendo la salida de Odoo. Marca con **⟳** tus addons cuyo código cambió y los actualiza de una vez. |
 | 🎯 **Una sola BD** | `i` en BDs corre Odoo solo con la base seleccionada (`-d` + `--db-filter`): las demás no se ven ni corren sus crons. `a` en Instancia vuelve a todas. |
 | 🔑 **Conectar** | Como en Odoo.sh: `o` abre Odoo en el navegador ya dentro como administrador y `O` deja elegir el usuario. No toca contraseñas. |

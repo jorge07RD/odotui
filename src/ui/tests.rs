@@ -275,3 +275,39 @@ fn run_one_database() {
         Some(Action::Cmd(Cmd::InstAllDbs))
     );
 }
+
+#[test]
+fn running_odoo_is_visible_everywhere() {
+    use crate::odoo::running::Running;
+    let mut app = App::for_tests();
+    let buf = render(&mut app);
+    assert!(find(&buf, "○ Odoo", Some(0)).is_some(), "ninguno: apagado");
+
+    let r = |pid, profile: Option<&str>, managed, port, db: Option<&str>| Running {
+        pid: Some(pid),
+        container: None,
+        profile: profile.map(String::from),
+        managed,
+        port,
+        db: db.map(String::from),
+        dev: false,
+    };
+    app.running = vec![r(4321, Some("dev"), true, 8069, None)];
+    let buf = render(&mut app);
+    let (x, y) = find(&buf, "● Odoo :8069", Some(0)).unwrap();
+    assert_eq!(app.hits.at(x + 2, y), Some(Action::Tab(Tab::Instance)));
+
+    // Dos: el de este perfil y uno lanzado fuera, con su BD.
+    app.running.push(r(999, None, false, 8070, Some("pro_x")));
+    app.tab = Tab::Instance;
+    let buf = render(&mut app);
+    assert!(find(&buf, "● 2 Odoo", Some(0)).is_some());
+    assert!(find(&buf, "2 Odoo corriendo", None).is_some());
+    let (_, y1) = find(&buf, "pid 4321", None).unwrap();
+    assert!(find(&buf, "este perfil", Some(y1)).is_some());
+    let (_, y2) = find(&buf, "pid 999", None).unwrap();
+    assert!(find(&buf, "solo pro_x", Some(y2)).is_some());
+    assert!(find(&buf, "iniciado fuera de odotui", Some(y2)).is_some());
+    let (ox, oy) = find(&buf, " abrir ", Some(y2)).unwrap();
+    assert_eq!(app.hits.at(ox + 1, oy), Some(Action::OpenRunning(1)));
+}

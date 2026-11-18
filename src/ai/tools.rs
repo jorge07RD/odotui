@@ -758,6 +758,22 @@ pub async fn describe(
     if !others.is_empty() {
         out += &format!("\nOtros perfiles: {}\n", others.join(", "));
     }
+    // Todos los Odoo de la máquina, de cualquier perfil o lanzados fuera.
+    let running = crate::odoo::running::scan(profiles).await;
+    if running.is_empty() {
+        out += "\nNingún Odoo corriendo en esta máquina.\n";
+    } else {
+        out += "\nOdoo corriendo en esta máquina:\n";
+        for r in &running {
+            let pid = r.pid.map(|p| format!(" pid {p}")).unwrap_or_default();
+            let db =
+                r.db.as_ref()
+                    .map(|d| format!(", solo «{d}»"))
+                    .unwrap_or_else(|| ", todas las BDs".into());
+            let dev = if r.dev { ", --dev" } else { "" };
+            out += &format!("  ● {}{pid} en {}{db}{dev}\n", r.who(), r.url());
+        }
+    }
     out
 }
 

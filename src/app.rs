@@ -39,6 +39,7 @@ use crate::{
         neutralize, pg,
         pg::DbInfo,
         restore::{self, Backup, Request},
+        running,
     },
     theme::{self, Theme},
     ui::widgets::{Glyphs, NERD, PLAIN},
@@ -155,6 +156,8 @@ pub struct App {
     pub inst_status: String,
     /// La BD con la que corre Odoo si se lanzó con una sola.
     pub inst_db: Option<String>,
+    /// Todos los Odoo que corren en la máquina (cualquier perfil o externos).
+    pub running: Vec<running::Running>,
     pub inst_log: LogView,
     logs_job: Option<CancellationToken>,
     /// Número del seguimiento de log en curso (los avisos de uno viejo se ignoran).
@@ -240,6 +243,7 @@ impl App {
             restore_target: None,
             inst_status: "—".into(),
             inst_db: None,
+            running: vec![],
             inst_log: LogView::default(),
             logs_job: None,
             logs_seq: 0,
@@ -325,6 +329,7 @@ impl App {
 
     /// Primera carga: sin perfiles se abre directamente el formulario.
     pub fn start(&mut self) {
+        self.refresh_running();
         if self.cfg.profiles.is_empty() {
             self.set_tab(Tab::Profiles);
             self.form = Some(Form::profile(None, &Profile::default()));
@@ -498,6 +503,14 @@ impl App {
         tokio::spawn(async move {
             let r = modules::list(&p, &db).await.map_err(|e| format!("{e:#}"));
             let _ = tx.send(Ev::Modules(g, db, r));
+        });
+    }
+
+    pub fn refresh_running(&mut self) {
+        let (tx, profiles) = (self.tx.clone(), self.cfg.profiles.clone());
+        tokio::spawn(async move {
+            let r = running::scan(&profiles).await;
+            let _ = tx.send(Ev::Running(r));
         });
     }
 
@@ -680,6 +693,7 @@ impl App {
             }
             Ev::LogsEnded(seq) if seq == self.logs_seq => self.logs_job = None,
             Ev::Ai(req) => self.on_ai(req),
+            Ev::Running(r) => self.running = r,
             Ev::LoginUsers(g, db, r) if g == self.generation => match r {
                 Ok(users) if users.is_empty() => {
                     self.toast(format!("«{db}» no tiene usuarios activos"))
@@ -768,6 +782,7 @@ impl App {
             }
             Sink::Instance => {
                 self.refresh_status();
+                self.refresh_running();
                 // `docker logs -f` termina al parar el contenedor: hay que
                 // volver a engancharse. En local `tail -F` sigue solo.
                 if self.current().is_some_and(Profile::is_docker) {
@@ -869,6 +884,15 @@ impl App {
                 }
             }
             Action::Cmd(c) => self.cmd(c),
+            Action::OpenRunning(i) => {
+                if let Some(r) = self.running.get(i) {
+                    let url = r.url();
+                    match login::open_browser(&url) {
+                        Ok(_) => self.toast(format!("abriendo {url}")),
+                        Err(e) => self.toast(format!("✗ {e}")),
+                    }
+                }
+            }
             Action::LoginAs(i) => {
                 if let Some(pick) = &self.login_pick
                     && let Some(u) = pick.users.get(i)
@@ -2263,6 +2287,10 @@ impl App {
         }
         if self.ticks.is_multiple_of(20) && self.tab == Tab::Instance {
             self.refresh_status();
+        }
+        // Cada 3 s: qué Odoo corren (también los lanzados fuera de odotui).
+        if self.ticks.is_multiple_of(12) {
+            self.refresh_running();
         }
         if self.ticks.is_multiple_of(4) && self.cfg.theme.as_deref().is_none_or(|t| t == "omarchy")
         {
