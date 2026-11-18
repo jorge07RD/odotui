@@ -101,20 +101,35 @@ pub async fn list(p: &Profile, db: &str) -> Result<Vec<ModuleInfo>> {
         tr("c.name"),
         tr("m.summary"),
     );
-    let rows = pg::query(p, db, &sql).await?;
+    // Sin categorías o sin shortdesc/summary (una BD a medias, un esquema
+    // mínimo): lo básico, sin título ni categoría.
+    let rows =
+        match pg::query(p, db, &sql).await {
+            Ok(rows) => rows,
+            Err(_) => pg::query(
+                p,
+                db,
+                "SELECT name, state, COALESCE(latest_version, ''), COALESCE(application, false), \
+             '', '', '' FROM ir_module_module ORDER BY name",
+            )
+            .await?,
+        };
     let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut mods: Vec<ModuleInfo> = rows
         .into_iter()
-        .filter(|r| r.len() >= 7)
-        .map(|r| ModuleInfo {
-            name: r[0].clone(),
-            state: r[1].clone(),
-            version: r[2].clone(),
-            application: r[3] == "t",
-            title: one_line(&r[4]),
-            category: one_line(&r[5]),
-            summary: one_line(&r[6]),
-            disk: None,
+        .filter(|r| r.len() >= 4)
+        .map(|r| {
+            let col = |i: usize| r.get(i).map(|s| one_line(s)).unwrap_or_default();
+            ModuleInfo {
+                name: r[0].clone(),
+                state: r[1].clone(),
+                version: r[2].clone(),
+                application: r[3] == "t",
+                title: col(4),
+                category: col(5),
+                summary: col(6),
+                disk: None,
+            }
         })
         .collect();
     let dir = p.addons_host().to_string();
