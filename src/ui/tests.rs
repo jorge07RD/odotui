@@ -322,7 +322,9 @@ fn module_search_bar_and_chips() {
     assert_eq!(app.hits.at(cx, cy), Some(Action::ModView(ModView::Changed)));
     click(&mut app, cx, cy);
     assert_eq!(names(&app), ["acme_ventas"]);
+}
 
+#[test]
 fn favorite_and_recent_databases_go_first() {
     let mut app = App::for_tests();
     let names = |app: &App| -> Vec<String> {
