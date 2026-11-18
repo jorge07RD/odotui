@@ -10,9 +10,139 @@ use ratatui::{
 use super::widgets::{self, Btn, cell};
 use crate::{
     app::App,
-    input::{Action, Cmd, HitMap, Pane},
+    input::{Action, Cmd, HitMap, ModView, Pane},
     jobs::Sink,
+    odoo::modules::{self, ModuleInfo},
 };
+
+/// Barra de búsqueda, siempre visible: clic o `/` para escribir.
+fn search_bar(f: &mut Frame, area: Rect, app: &App, shown: usize, hits: &mut HitMap) {
+    let t = &app.theme;
+    let text = &app.mod_list.filter;
+    let editing = app.filtering == Some(Pane::ModList);
+    let bg = if editing { t.sel } else { t.surface };
+    f.buffer_mut().set_style(area, Style::new().bg(bg));
+    let mut spans = vec![Span::styled(
+        format!(" {} ", app.glyphs.filter),
+        Style::new().fg(t.accent).bg(bg).bold(),
+    )];
+    if text.is_empty() && !editing {
+        spans.push(Span::styled(
+            "Buscar módulo: nombre, título o categoría  (/)",
+            Style::new().fg(t.dim).bg(bg).italic(),
+        ));
+    } else {
+        spans.push(Span::styled(
+            text.clone(),
+            Style::new().fg(t.fg).bg(bg).bold(),
+        ));
+        if editing {
+            spans.push(Span::styled("▏", Style::new().fg(t.accent).bg(bg)));
+        }
+    }
+    f.render_widget(Line::from(spans), area);
+    let total = app.modules.len();
+    let mut right = format!("{shown} de {total} ");
+    if editing {
+        right = format!("{shown} de {total} · ↑↓ elegir · Enter · Esc borra ");
+    } else if !text.is_empty() {
+        right = format!("{shown} de {total} · Esc borra ");
+    }
+    f.render_widget(
+        Line::styled(right, Style::new().fg(t.dim).bg(bg)).right_aligned(),
+        area,
+    );
+    hits.push(area, Action::Filter(Pane::ModList));
+}
+
+/// Chips de estado (clic o `s`), con cuántos de cada uno coinciden.
+fn chips(f: &mut Frame, area: Rect, app: &App, words: &[String], hits: &mut HitMap) {
+    let t = &app.theme;
+    let counts: Vec<usize> = ModView::ALL
+        .iter()
+        .map(|&v| {
+            app.modules
+                .iter()
+                .filter(|m| app.in_view(m, v) && m.score(words).is_some())
+                .count()
+        })
+        .collect();
+    let labels = |short: bool| -> Vec<String> {
+        ModView::ALL
+            .iter()
+            .zip(&counts)
+            .map(|(&v, n)| {
+                let name = if short { v.short() } else { v.label() };
+                match v {
+                    ModView::Changed => format!(" ⟳ {name} {n} "),
+                    _ => format!(" {name} {n} "),
+                }
+            })
+            .collect()
+    };
+    // Si no caben todos con su nombre, con el nombre corto.
+    let total = |ls: &[String]| -> u16 {
+        ls.iter()
+            .map(|l| Line::raw(l.as_str()).width() as u16 + 1)
+            .sum()
+    };
+    let mut shown = labels(false);
+    if total(&shown) > area.width {
+        shown = labels(true);
+    }
+    let mut x = area.x;
+    for ((v, label), n) in ModView::ALL.into_iter().zip(shown).zip(counts) {
+        let w = Line::raw(label.as_str()).width() as u16;
+        if x + w > area.right() {
+            break;
+        }
+        let on = app.mod_view == v;
+        let r = Rect::new(x, area.y, w, 1);
+        let style = if on {
+            Style::new().fg(t.bg).bg(t.accent).bold()
+        } else if v == ModView::Changed && n > 0 {
+            Style::new().fg(t.warn).bg(t.surface)
+        } else if app.hovered(r) {
+            Style::new().fg(t.fg).bg(t.sel)
+        } else {
+            Style::new().fg(t.dim).bg(t.surface)
+        };
+        f.render_widget(Line::styled(label, style), r);
+        hits.push(r, Action::ModView(v));
+        x += w + 1;
+    }
+}
+
+/// Nombre técnico y, si cabe, el visible en tenue; lo buscado resaltado.
+fn name_cell(
+    m: &ModuleInfo,
+    width: usize,
+    words: &[String],
+    style: Style,
+    app: &App,
+) -> Vec<Span<'static>> {
+    let t = &app.theme;
+    let hl = Style::new().fg(t.bg).bg(t.accent).bold();
+    // Una columna de aire antes del estado.
+    let width = width.saturating_sub(1);
+    let name = widgets::truncate(&m.name, width);
+    let mut used = Line::raw(name.as_str()).width();
+    let mut spans = widgets::highlight(&name, words, style, hl);
+    let rest = width.saturating_sub(used + 2);
+    if rest >= 4 && !m.title.is_empty() && m.title != m.name {
+        let title = widgets::truncate(&m.title, rest);
+        used += 2 + Line::raw(title.as_str()).width();
+        spans.push(Span::raw("  "));
+        spans.extend(widgets::highlight(
+            &title,
+            words,
+            Style::new().fg(t.dim),
+            hl,
+        ));
+    }
+    spans.push(Span::raw(" ".repeat(width.saturating_sub(used) + 1)));
+    spans
+}
 
 pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     let t = &app.theme;
@@ -67,7 +197,24 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     let [dbrow, inner] =
         Layout::vertical([Constraint::Length(2), Constraint::Fill(1)]).areas(inner);
     db_selector(f, Rect { height: 1, ..dbrow }, app, hits);
-    let inner = widgets::filter_bar(f, inner, app, Pane::ModList, hits);
+    let words = modules::search_words(&app.mod_list.filter);
+    let [search, chips_row, inner] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Fill(1),
+    ])
+    .areas(inner);
+    search_bar(f, search, app, rows.len(), hits);
+    chips(
+        f,
+        Rect {
+            height: 1,
+            ..chips_row
+        },
+        app,
+        &words,
+        hits,
+    );
     if let Some(e) = &app.mods_err {
         f.render_widget(
             Line::styled(
@@ -77,7 +224,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
             inner,
         );
     } else {
-        let name_w = (inner.width as usize).saturating_sub(32).clamp(10, 50);
+        let name_w = (inner.width as usize).saturating_sub(32).clamp(10, 70);
         let [head, inner] =
             Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
         widgets::header(
@@ -120,7 +267,12 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
                     "uninstallable" => t.err,
                     _ => t.dim,
                 };
-                Line::from(vec![
+                let name_style = if m.application {
+                    Style::new().fg(t.fg).bold()
+                } else {
+                    Style::new().fg(t.fg)
+                };
+                let mut spans = vec![
                     Span::styled(
                         if on { " [✓] " } else { " [ ] " },
                         if on {
@@ -130,17 +282,11 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
                         },
                     ),
                     mark,
-                    Span::styled(
-                        cell(&m.name, name_w),
-                        if m.application {
-                            Style::new().fg(t.fg).bold()
-                        } else {
-                            Style::new().fg(t.fg)
-                        },
-                    ),
-                    Span::styled(cell(&state, 14), state_color),
-                    Span::styled(version, t.dim),
-                ])
+                ];
+                spans.extend(name_cell(m, name_w, &words, name_style, app));
+                spans.push(Span::styled(cell(&state, 14), state_color));
+                spans.push(Span::styled(version, t.dim));
+                Line::from(spans)
             })
             .collect();
         // La casilla es clicable aparte de la fila.
@@ -154,10 +300,18 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
             );
         }
         if rows.is_empty() && !app.mods_loading {
-            f.render_widget(
-                Line::styled(" sin módulos (elige una BD de Odoo)", t.dim),
-                inner,
-            );
+            let msg = if app.modules.is_empty() {
+                " sin módulos (elige una BD de Odoo)".to_string()
+            } else if app.mod_list.filter.is_empty() {
+                format!(" ninguno en «{}»", app.mod_view.label())
+            } else {
+                format!(
+                    " nada coincide con «{}» en «{}»",
+                    app.mod_list.filter,
+                    app.mod_view.label()
+                )
+            };
+            f.render_widget(Line::styled(msg, t.dim), inner);
         }
     }
 

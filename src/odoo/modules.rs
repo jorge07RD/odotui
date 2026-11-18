@@ -7,6 +7,7 @@ use crate::{
     config::Profile,
     exec::{self, Spec, Stop},
     jobs::Tx,
+    log::fold,
     odoo::{
         addons::{self, Addon},
         dev, pg, restore,
@@ -19,12 +20,58 @@ pub struct ModuleInfo {
     pub state: String,
     pub version: String,
     pub application: bool,
+    /// Nombre visible («Sales», «Invoicing»), en español si está.
+    pub title: String,
+    pub category: String,
+    /// Una línea que dice para qué sirve.
+    pub summary: String,
     /// Versión del `__manifest__.py` en el disco (ya con la serie), si es un
     /// addon propio.
     pub disk: Option<String>,
 }
 
 impl ModuleInfo {
+    /// Si coincide con la búsqueda (todas las palabras, sin tildes ni
+    /// mayúsculas, en nombre, título, categoría, resumen o estado), qué tan
+    /// bien (menos es mejor): 0 nombre exacto, 1 título exacto, 2 el nombre
+    /// empieza así, 3 el título empieza así, 4 todas en el nombre, 5 todas en
+    /// el título, 6 en otra parte.
+    pub fn score(&self, words: &[String]) -> Option<u8> {
+        if words.is_empty() {
+            return Some(0);
+        }
+        let name = fold(&self.name);
+        let title = fold(&self.title);
+        let mut extra = format!("{} {} {}", self.category, self.summary, self.state);
+        if self.changed() {
+            extra += " cambió cambiado";
+        }
+        if self.disk.is_some() {
+            extra += " propio";
+        }
+        let all = format!("{name} {title} {}", fold(&extra));
+        if !words.iter().all(|w| all.contains(w.as_str())) {
+            return None;
+        }
+        let q = words.join(" ");
+        let all_in = |s: &str| words.iter().all(|w| s.contains(w.as_str()));
+        Some(if name == q {
+            0
+        } else if title == q {
+            1
+        } else if name.starts_with(&q) {
+            2
+        } else if title.starts_with(&q) {
+            3
+        } else if all_in(&name) {
+            4
+        } else if all_in(&title) {
+            5
+        } else {
+            6
+        })
+    }
+
     /// Instalado, pero el código en el disco es de otra versión: falta `-u`.
     pub fn changed(&self) -> bool {
         self.state == "installed"
@@ -36,22 +83,53 @@ impl ModuleInfo {
 }
 
 pub async fn list(p: &Profile, db: &str) -> Result<Vec<ModuleInfo>> {
-    let rows = pg::query(
-        p,
-        db,
-        "SELECT name, state, COALESCE(latest_version, ''), COALESCE(application, false) \
-         FROM ir_module_module ORDER BY name",
-    )
-    .await?;
+    // shortdesc, summary y el nombre de la categoría son jsonb traducidos desde
+    // Odoo 16 y texto antes: to_jsonb sirve para los dos. Sin saltos de línea,
+    // que partirían la fila.
+    let tr = |col: &str| {
+        format!(
+            "regexp_replace(COALESCE(to_jsonb({col}) ->> 'es_ES', to_jsonb({col}) ->> 'es_419', \
+             to_jsonb({col}) ->> 'en_US', to_jsonb({col}) #>> '{{}}', ''), '\\s+', ' ', 'g')"
+        )
+    };
+    let sql = format!(
+        "SELECT m.name, m.state, COALESCE(m.latest_version, ''), COALESCE(m.application, false), \
+         {}, {}, {} \
+         FROM ir_module_module m LEFT JOIN ir_module_category c ON c.id = m.category_id \
+         ORDER BY m.name",
+        tr("m.shortdesc"),
+        tr("c.name"),
+        tr("m.summary"),
+    );
+    // Sin categorías o sin shortdesc/summary (una BD a medias, un esquema
+    // mínimo): lo básico, sin título ni categoría.
+    let rows =
+        match pg::query(p, db, &sql).await {
+            Ok(rows) => rows,
+            Err(_) => pg::query(
+                p,
+                db,
+                "SELECT name, state, COALESCE(latest_version, ''), COALESCE(application, false), \
+             '', '', '' FROM ir_module_module ORDER BY name",
+            )
+            .await?,
+        };
+    let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut mods: Vec<ModuleInfo> = rows
         .into_iter()
         .filter(|r| r.len() >= 4)
-        .map(|r| ModuleInfo {
-            name: r[0].clone(),
-            state: r[1].clone(),
-            version: r[2].clone(),
-            application: r[3] == "t",
-            disk: None,
+        .map(|r| {
+            let col = |i: usize| r.get(i).map(|s| one_line(s)).unwrap_or_default();
+            ModuleInfo {
+                name: r[0].clone(),
+                state: r[1].clone(),
+                version: r[2].clone(),
+                application: r[3] == "t",
+                title: col(4),
+                category: col(5),
+                summary: col(6),
+                disk: None,
+            }
         })
         .collect();
     let dir = p.addons_host().to_string();
@@ -76,12 +154,27 @@ pub fn merge(mods: &mut Vec<ModuleInfo>, found: &[Addon]) {
                 name: a.name.clone(),
                 state: "uninstalled".into(),
                 application: a.manifest.get("application") == Some(&serde_json::Value::Bool(true)),
+                title: manifest_str(&a.manifest, "name"),
+                category: manifest_str(&a.manifest, "category"),
+                summary: manifest_str(&a.manifest, "summary"),
                 disk: Some(disk),
                 ..Default::default()
             }),
         }
     }
     mods.sort_by(|a, b| a.name.cmp(&b.name));
+}
+
+fn manifest_str(m: &serde_json::Value, k: &str) -> String {
+    m.get(k)
+        .and_then(|v| v.as_str())
+        .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+        .unwrap_or_default()
+}
+
+/// Las palabras de una búsqueda, sin tildes ni mayúsculas.
+pub fn search_words(q: &str) -> Vec<String> {
+    fold(q).split_whitespace().map(String::from).collect()
 }
 
 /// Desinstala con el ORM (no hay opción de línea de comandos para esto).
@@ -236,6 +329,49 @@ pub async fn run(
 mod tests {
     use super::*;
     use crate::config::Mode;
+
+    #[test]
+    fn search_ranks_name_before_title_before_rest() {
+        let m = |name: &str, title: &str, category: &str| ModuleInfo {
+            name: name.into(),
+            title: title.into(),
+            category: category.into(),
+            state: "installed".into(),
+            ..Default::default()
+        };
+        let sale = m("sale", "Sales", "Sales");
+        let sale_stock = m("sale_stock", "Sales and Warehouse Management", "Sales");
+        let crm = m("crm", "CRM", "Sales");
+        let acc = m("account", "Facturación", "Accounting");
+        let q = |s: &str| search_words(s);
+        assert_eq!(sale.score(&q("sale")), Some(0), "nombre exacto");
+        assert_eq!(
+            acc.score(&q("FACTURACION")),
+            Some(1),
+            "título exacto, sin tildes"
+        );
+        assert_eq!(
+            sale_stock.score(&q("sale")),
+            Some(2),
+            "el nombre empieza así"
+        );
+        assert_eq!(acc.score(&q("fact")), Some(3), "el título empieza así");
+        assert_eq!(sale_stock.score(&q("stock")), Some(4), "en el nombre");
+        assert_eq!(sale_stock.score(&q("warehouse")), Some(5), "en el título");
+        assert_eq!(
+            sale_stock.score(&q("sale warehouse")),
+            Some(5),
+            "todas en el título"
+        );
+        assert_eq!(crm.score(&q("sales")), Some(6), "solo en la categoría");
+        assert_eq!(
+            sale_stock.score(&q("stock management")),
+            Some(6),
+            "repartidas"
+        );
+        assert_eq!(sale.score(&q("sale warehouse")), None);
+        assert_eq!(crm.score(&[]), Some(0), "sin búsqueda, todos");
+    }
 
     #[test]
     fn merge_marks_changed_and_new_addons() {

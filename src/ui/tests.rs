@@ -275,3 +275,165 @@ fn run_one_database() {
         Some(Action::Cmd(Cmd::InstAllDbs))
     );
 }
+
+#[test]
+fn module_search_bar_and_chips() {
+    use crate::input::ModView;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let mut app = App::for_tests();
+    app.tab = Tab::Modules;
+    app.focus = Pane::ModList;
+    app.modules[2].title = "Ventas".into();
+    let names = |app: &App| -> Vec<String> {
+        app.module_rows()
+            .iter()
+            .map(|&i| app.modules[i].name.clone())
+            .collect()
+    };
+    let key =
+        |app: &mut App, code| app.on_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+
+    // Siempre visible, con su ayuda; un clic empieza a escribir.
+    let buf = render(&mut app);
+    let (x, y) = find(&buf, "Buscar módulo", None).unwrap();
+    assert_eq!(app.hits.at(x, y), Some(Action::Filter(Pane::ModList)));
+    click(&mut app, x, y);
+    assert_eq!(app.filtering, Some(Pane::ModList));
+
+    // «ventas»: sale primero (su título es exactamente «Ventas»), luego
+    // acme_ventas (lo lleva dentro del nombre).
+    for c in "ventas".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+    assert_eq!(names(&app), ["sale", "acme_ventas"]);
+    let buf = render(&mut app);
+    assert!(find(&buf, "2 de 3", None).is_some());
+
+    // ↓ elige la siguiente sin dejar de escribir.
+    key(&mut app, KeyCode::Down);
+    assert_eq!(app.filtering, Some(Pane::ModList));
+    assert_eq!(app.selected_module().unwrap().name, "acme_ventas");
+
+    // Chip «Cambiados»: solo acme_ventas (su código cambió).
+    key(&mut app, KeyCode::Enter);
+    let buf = render(&mut app);
+    // Con nombre largo o corto («⟳ Camb.»), según el ancho.
+    let (cx, cy) = find(&buf, "⟳ Camb", None).unwrap();
+    assert_eq!(app.hits.at(cx, cy), Some(Action::ModView(ModView::Changed)));
+    click(&mut app, cx, cy);
+    assert_eq!(names(&app), ["acme_ventas"]);
+}
+
+#[test]
+fn favorite_and_recent_databases_go_first() {
+    let mut app = App::for_tests();
+    let names = |app: &App| -> Vec<String> {
+        app.db_rows()
+            .iter()
+            .map(|&i| app.dbs[i].name.clone())
+            .collect()
+    };
+    assert_eq!(names(&app), ["acme_prod", "acme_staging", "postgres"]);
+
+    // Clic en la estrella de acme_staging: favorita, sube y sigue seleccionada.
+    let buf = render(&mut app);
+    let (x, y) = find(&buf, "acme_staging", None).unwrap();
+    assert_eq!(app.hits.at(x - 2, y), Some(Action::Toggle(Pane::DbList, 1)));
+    click(&mut app, x - 2, y);
+    assert!(app.db_marks.is_favorite("acme_staging"));
+    assert_eq!(names(&app), ["acme_staging", "acme_prod", "postgres"]);
+    assert_eq!(app.selected_db().unwrap().name, "acme_staging");
+
+    // Usada hace poco: justo después de las favoritas, con su «cuándo».
+    app.db_marks.touch("postgres", "psql");
+    assert_eq!(names(&app), ["acme_staging", "postgres", "acme_prod"]);
+    let buf = render(&mut app);
+    assert!(find(&buf, "★ acme_staging", None).is_some());
+    assert!(find(&buf, "ahora", None).is_some());
+}
+
+#[test]
+fn running_odoo_is_visible_everywhere() {
+    use crate::odoo::running::Running;
+    let mut app = App::for_tests();
+    let buf = render(&mut app);
+    assert!(find(&buf, "○ Odoo", Some(0)).is_some(), "ninguno: apagado");
+
+    let r = |pid, profile: Option<&str>, managed, port, db: Option<&str>| Running {
+        pid: Some(pid),
+        container: None,
+        profile: profile.map(String::from),
+        managed,
+        port,
+        db: db.map(String::from),
+        dev: false,
+    };
+    app.running = vec![r(4321, Some("dev"), true, 8069, None)];
+    let buf = render(&mut app);
+    let (x, y) = find(&buf, "● Odoo :8069", Some(0)).unwrap();
+    assert_eq!(app.hits.at(x + 2, y), Some(Action::Tab(Tab::Instance)));
+
+    // Dos: el de este perfil y uno lanzado fuera, con su BD.
+    app.running.push(r(999, None, false, 8070, Some("pro_x")));
+    app.tab = Tab::Instance;
+    let buf = render(&mut app);
+    assert!(find(&buf, "● 2 Odoo", Some(0)).is_some());
+    assert!(find(&buf, "2 Odoo corriendo", None).is_some());
+    let (_, y1) = find(&buf, "pid 4321", None).unwrap();
+    assert!(find(&buf, "este perfil", Some(y1)).is_some());
+    let (_, y2) = find(&buf, "pid 999", None).unwrap();
+    assert!(find(&buf, "solo pro_x", Some(y2)).is_some());
+    assert!(find(&buf, "iniciado fuera de odotui", Some(y2)).is_some());
+    let (ox, oy) = find(&buf, " abrir ", Some(y2)).unwrap();
+    assert_eq!(app.hits.at(ox + 1, oy), Some(Action::OpenRunning(1)));
+}
+
+#[test]
+fn run_one_database_from_instance() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let mut app = App::for_tests();
+    app.tab = Tab::Instance;
+    app.inst_status = "running".into();
+    app.inst_db = Some("acme_staging".into());
+    let buf = render(&mut app);
+    assert_eq!(
+        hit(&app, &buf, "Una BD…", None),
+        Some(Action::Cmd(Cmd::InstRunOnly))
+    );
+
+    // i: elegir entre las BDs de Odoo (postgres no), la que corre sola
+    // primero y «todas» al final.
+    app.on_event(Event::Key(KeyEvent::new(
+        KeyCode::Char('i'),
+        KeyModifiers::NONE,
+    )));
+    let labels: Vec<String> = app
+        .palette_items()
+        .into_iter()
+        .map(|(l, _)| l.trim().to_string())
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "● acme_staging   corriendo sola",
+            "acme_prod",
+            "Todas las BDs"
+        ]
+    );
+    let buf = render(&mut app);
+    assert!(find(&buf, "Correr Odoo solo con", None).is_some());
+
+    // Si se abrió antes de saber con cuál corre, al llegar el dato se reordena.
+    app.inst_db = None;
+    app.apply(Action::Cmd(Cmd::InstRunOnly));
+    app.inst_db = Some("acme_staging".into());
+    assert!(app.palette_items()[0].0.contains("● acme_staging"));
+
+    // Filtrar y elegir la que ya corre sola: solo avisa, no reinicia.
+    app.palette.as_mut().unwrap().query = "stag".into();
+    let items = app.palette_items();
+    assert_eq!(items.len(), 1);
+    app.apply(items[0].1);
+    assert!(app.busy.is_none());
+    assert!(app.toast.as_ref().unwrap().0.contains("ya corre solo"));
+}

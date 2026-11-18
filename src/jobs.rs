@@ -60,6 +60,8 @@ pub enum Ev {
         String,
         Result<Vec<crate::odoo::login::OdooUser>, String>,
     ),
+    /// Los Odoo que corren en la máquina (todos los perfiles y externos).
+    Running(Vec<crate::odoo::running::Running>),
     /// Terminó «Conectar».
     Login(Result<String, String>),
 }

@@ -19,10 +19,10 @@ Bases de datos, backups, servidor y módulos: con el mouse, con el teclado o con
 
 | | |
 |---|---|
-| 🗄️ **Bases de datos** | Lista con tamaño, dueño y versión de Odoo. Duplica, renombra, neutraliza y borra, siempre junto con su filestore. |
+| 🗄️ **Bases de datos** | Lista con tamaño, versión de Odoo y cuándo la usaste. Las favoritas (`*`, ★) van arriba y luego la más reciente. Duplica, renombra, neutraliza y borra, siempre junto con su filestore. |
 | 💾 **Backups** | Crea `.zip` compatibles con el gestor de Odoo (con filestore y `manifest.json`) o `.dump`, y restaura esos, los de **Odoo.sh**, `.sql`, `.sql.gz` y carpetas `dump.sql`. **Progreso real**, se puede cancelar y neutraliza la copia (sin crons, sin correo, `admin/admin`). |
-| 🖥️ **Instancia** | Inicia, para y reinicia Odoo (contenedor o `odoo-bin`) con el **log en vivo**: colores por nivel, tracebacks resaltados y filtro. |
-| 🧩 **Módulos** | Instala (`-i`), actualiza (`-u`) o desinstala viendo la salida de Odoo. Marca con **⟳** tus addons cuyo código cambió y los actualiza de una vez. |
+| 🖥️ **Instancia** | Inicia, para y reinicia Odoo (contenedor o `odoo-bin`) con el **log en vivo**: colores por nivel, tracebacks resaltados y filtro. Muestra **todos los Odoo que corren en la máquina** (de cualquier perfil, contenedores y los lanzados fuera de odotui) con su puerto y BD, y la cabecera indica desde cualquier pestaña si hay alguno (`● Odoo :8069`). |
+| 🧩 **Módulos** | Barra de búsqueda siempre visible: nombre técnico, nombre visible («Facturación»), categoría o resumen, sin tildes, los mejores primero y lo encontrado resaltado; chips Todos · Instalados · Propios · Cambiados · Disponibles. Instala (`-i`), actualiza (`-u`) o desinstala viendo la salida de Odoo. Marca con **⟳** tus addons cuyo código cambió y los actualiza de una vez. |
 | 🎯 **Una sola BD** | `i` en BDs corre Odoo solo con la base seleccionada (`-d` + `--db-filter`): las demás no se ven ni corren sus crons. `a` en Instancia vuelve a todas. |
 | 🔑 **Conectar** | Como en Odoo.sh: `o` abre Odoo en el navegador ya dentro como administrador y `O` deja elegir el usuario. No toca contraseñas. |
 | 🐍 **Shell y psql** | `odoo shell` o `psql` sobre la BD seleccionada, en la misma terminal; al salir vuelves a la TUI. |
@@ -216,11 +216,14 @@ Los backups nuevos se llaman `<bd>_<AAAA-MM-DD_HHMM>.zip` y se escriben con un n
 | clic en `⇣ siguiendo` | `f` | seguir el final del log |
 | clic en una línea roja | `y` · `e` | copiar ese error con su traceback · copiar el último · solo errores |
 | botón Backup | `b` (BDs) | backup zip o dump de la BD |
+| clic en ☆ | `*` (BDs) | BD favorita sí/no: las favoritas van arriba |
 | botón Correr solo esta · Todas | `i` (BDs) · `a` (Instancia) | Odoo solo con la BD seleccionada · con todas otra vez |
+| botón Una BD… | `i` (Instancia) | Odoo solo con la BD que elijas en un selector con filtro (o con todas) |
 | botón Conectar · Como… | `o` · `O` (BDs) | entrar en Odoo como administrador · eligiendo el usuario |
 | — | `S` · `P` (BDs) | `odoo shell` · `psql` sobre la BD |
 | botón Cambiados · Desinstalar | `U` · `d` (Módulos) | actualizar los addons con ⟳ · desinstalar |
-| clic en la barra de filtro | `/` · `Esc` | filtrar · borrar el filtro |
+| clic en la barra de filtro | `/` · `Esc` | filtrar (en Módulos, buscar) · borrar el filtro; escribiendo, `↑↓` eligen fila |
+| clic en un chip | `s` (Módulos) | Todos · Instalados · Propios · Cambiados · Disponibles |
 | `≡` | `:` | paleta de comandos (sin importar tildes) |
 | `? ayuda` · `q salir` | `?` · `q` | ayuda · salir |
 
@@ -230,6 +233,7 @@ Los backups nuevos se llaman `<bd>_<AAAA-MM-DD_HHMM>.zip` y se escriben con un n
 |---|---|
 | `~/.config/odotui/config.toml` | perfiles, tema (`theme`), íconos (`icons`) y animación de entrada (`intro`) |
 | `~/.local/state/odotui/history.json` | historial de restauraciones (las de la IA van marcadas) |
+| `~/.local/state/odotui/dbs.json` | BDs favoritas y cuándo y para qué se usó cada una, por perfil |
 | `~/.local/state/odotui/odoo-<perfil>.{pid,log}` | el Odoo local en segundo plano |
 
 ## 🛠️ Desarrollo

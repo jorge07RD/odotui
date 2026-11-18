@@ -33,6 +33,7 @@ rueda y arrastre.
 | `c` · `n` | Duplicar · renombrar |
 | `x` | Neutralizar (pide la contraseña del administrador) |
 | `d` | Borrar (con confirmación) |
+| `*` | BD favorita sí/no (también clic en ☆): favoritas arriba, luego la usada más recientemente |
 | `i` | Correr Odoo solo con la BD seleccionada (en Instancia, `a` vuelve a todas) |
 | `o` · `O` | Conectar: Odoo en el navegador ya dentro, como admin · eligiendo el usuario (selector con filtro) |
 | `S` · `P` | `odoo shell` · `psql` interactivos; la TUI se suspende y vuelve al salir |
@@ -51,6 +52,8 @@ La barra muestra el avance real. Abajo está el historial (las restauraciones de
 | Tecla | Acción |
 |---|---|
 | `s` · `t` · `R` | Iniciar · parar · reiniciar Odoo |
+| `i` | Correr Odoo con una sola BD, como en producción: selector con filtro (la que corre sola primero, «Todas las BDs» al final) |
+| `a` | Volver a todas las BDs |
 | `L` | Seguir o dejar el log |
 | `v` | `--dev=all` (solo local, al próximo inicio) |
 | `o` | Abrir Odoo en el navegador |
@@ -62,6 +65,8 @@ y tracebacks con una banda roja.
 
 | Tecla | Acción |
 |---|---|
+| `/` · clic en la barra | Buscar: nombre técnico, nombre visible, categoría o resumen, sin tildes; `↑↓` eligen fila sin dejar de escribir, `Esc` borra |
+| `s` · clic en un chip | Todos · Instalados · Propios · Cambiados · Disponibles |
 | `b` · `B` | BD siguiente · anterior |
 | `Espacio` · clic en `[ ]` | Marcar |
 | `i` · `u` | Instalar · actualizar los marcados (o el seleccionado) |

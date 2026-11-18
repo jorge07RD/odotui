@@ -8,7 +8,7 @@ TUI abierta, se ven en su pestaña.
 
 | Herramienta | Argumentos | Para qué |
 |---|---|---|
-| `status` | — | Perfil activo, rutas, contenedores, estado de Odoo, tarea en curso, si la TUI está abierta |
+| `status` | — | Perfil activo, rutas, contenedores, estado de Odoo, tarea en curso, si la TUI está abierta Al final, todos los Odoo que corren en la máquina (de cualquier perfil o lanzados fuera de odotui) con pid, puerto y BD |
 | `switch_profile` | `profile*` | Cambiar de perfil (falla si hay una tarea en curso) |
 | `show` | `tab*`: `dbs` · `restore` · `instance` · `modules` · `profiles` | Mostrar una pestaña en la TUI |
 | `cancel` | — | Cancelar la tarea larga en curso |
@@ -17,9 +17,9 @@ TUI abierta, se ven en su pestaña.
 
 | Herramienta | Argumentos | Devuelve |
 |---|---|---|
-| `list_databases` | — | BDs con versión de Odoo (`—` = no es de Odoo), tamaño y dueño |
+| `list_databases` | — | BDs con versión de Odoo (`—` = no es de Odoo), tamaño y dueño. Primero las favoritas del usuario (`★`) y luego la usada más recientemente (`usada=hace 2 h (conectar)`): «mi BD» o «la de siempre» suele ser la primera |
 | `list_backups` | — | Backups en `backups_dir`: `.zip` de Odoo, `.dump`, `.sql(.gz)`, carpetas con `dump.sql` |
-| `list_modules` | `database*`, `filter`, `state` | Módulos con estado, versión y si el código cambió (⟳) |
+| `list_modules` | `database*`, `filter`, `state` | Módulos con estado, versión y nombre visible («Facturación»). `filter` busca todas las palabras en nombre técnico, nombre visible, categoría y resumen (sin tildes) y ordena los mejores primero: sirve para «el módulo de facturación» sin saber su nombre técnico |
 | `read_logs` | `lines` (200), `filter`, `errors_only`, `since` | Log del servidor. `errors_only` = cada error con su traceback. `since` = solo lo nuevo (lo devuelve cada lectura) |
 | `describe_model` | `database*`, `model*` | Campos: tipo, relación, required, store, compute y módulo que lo define |
 | `find_views` | `database*`, `model` o `xml_id` | Vistas con xml_id, tipo, prioridad y herencia |

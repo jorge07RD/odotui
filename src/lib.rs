@@ -8,6 +8,7 @@ pub mod ai;
 pub mod app;
 pub mod clip;
 pub mod config;
+pub mod dbmarks;
 pub mod exec;
 pub mod form;
 pub mod history;

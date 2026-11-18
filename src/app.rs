@@ -25,10 +25,11 @@ use crate::{
         tools,
     },
     config::{Config, Profile},
+    dbmarks,
     exec::{self, Spec, Stop},
     form::{self, Form, Target},
     history::{self, Entry},
-    input::{Action, Cmd, HitMap, Pane, Tab},
+    input::{Action, Cmd, HitMap, ModView, Pane, Tab},
     jobs::{AiRequest, Ev, Progress, Sink, Tx},
     log::{ListState, LogView},
     odoo::{
@@ -39,6 +40,7 @@ use crate::{
         neutralize, pg,
         pg::DbInfo,
         restore::{self, Backup, Request},
+        running,
     },
     theme::{self, Theme},
     ui::widgets::{Glyphs, NERD, PLAIN},
@@ -96,6 +98,8 @@ pub struct Palette {
     pub offset: usize,
     /// Elige un usuario de `App::login_pick` en vez de un comando.
     pub users: bool,
+    /// Elige la BD de `App::db_pick` con la que correr Odoo.
+    pub dbs: bool,
 }
 
 /// Usuarios de una BD para «Conectar como…».
@@ -122,6 +126,8 @@ pub struct App {
     pub help: bool,
     pub palette: Option<Palette>,
     pub login_pick: Option<LoginPick>,
+    /// Opciones de «correr solo con…» desde Instancia; `None` = todas.
+    pub db_pick: Vec<Option<String>>,
     /// BD en la que se está creando una sesión («Conectar»).
     pub connecting: Option<String>,
     pub form: Option<Form>,
@@ -155,6 +161,8 @@ pub struct App {
     pub inst_status: String,
     /// La BD con la que corre Odoo si se lanzó con una sola.
     pub inst_db: Option<String>,
+    /// Todos los Odoo que corren en la máquina (cualquier perfil o externos).
+    pub running: Vec<running::Running>,
     pub inst_log: LogView,
     logs_job: Option<CancellationToken>,
     /// Número del seguimiento de log en curso (los avisos de uno viejo se ignoran).
@@ -167,6 +175,8 @@ pub struct App {
     pub mods_err: Option<String>,
     pub mod_list: ListState,
     pub marks: BTreeSet<String>,
+    /// Chip elegido en Módulos.
+    pub mod_view: ModView,
     pub mod_log: LogView,
 
     pub prof_list: ListState,
@@ -181,6 +191,12 @@ pub struct App {
     intro_on: bool,
     /// Pestañas ya vistas: la primera visita a cada una se anima.
     seen: Vec<Tab>,
+    /// Favoritas y último uso de las BDs del perfil (ver `dbmarks`).
+    pub db_marks: dbmarks::Marks,
+    /// Cuándo cambió `dbs.json` al leerlo (otro proceso, p. ej. la IA, lo toca).
+    marks_stamp: Option<SystemTime>,
+    /// `false` en las pruebas: las marcas no se guardan en disco.
+    persist_marks: bool,
     pub history: Vec<Entry>,
     /// Para el bucle principal (se vacía en cada vuelta).
     pub effects: Vec<Effect>,
@@ -216,6 +232,7 @@ impl App {
             help: false,
             palette: None,
             login_pick: None,
+            db_pick: vec![],
             connecting: None,
             form: None,
             confirm: None,
@@ -240,6 +257,7 @@ impl App {
             restore_target: None,
             inst_status: "—".into(),
             inst_db: None,
+            running: vec![],
             inst_log: LogView::default(),
             logs_job: None,
             logs_seq: 0,
@@ -250,6 +268,7 @@ impl App {
             mods_err: None,
             mod_list: ListState::default(),
             marks: BTreeSet::new(),
+            mod_view: ModView::default(),
             mod_log: LogView::default(),
             prof_list: ListState {
                 sel: profile,
@@ -261,6 +280,9 @@ impl App {
             intro,
             intro_on,
             seen: vec![Tab::Dbs],
+            db_marks: dbmarks::Marks::default(),
+            marks_stamp: None,
+            persist_marks: true,
             history: history::load(),
             effects: vec![],
         }
@@ -288,6 +310,8 @@ impl App {
         app.history.clear();
         app.intro = None;
         app.intro_on = false;
+        app.persist_marks = false;
+        app.db_marks = dbmarks::Marks::default();
         let db = |name: &str, version: Option<&str>| DbInfo {
             name: name.into(),
             size: 50 << 20,
@@ -304,8 +328,8 @@ impl App {
             name: name.into(),
             state: state.into(),
             version: "17.0.1.0".into(),
-            application: false,
             disk: disk.map(String::from),
+            ..Default::default()
         };
         app.modules = vec![
             m("acme_ventas", "installed", Some("17.0.1.1")),
@@ -325,6 +349,8 @@ impl App {
 
     /// Primera carga: sin perfiles se abre directamente el formulario.
     pub fn start(&mut self) {
+        self.reload_marks(true);
+        self.refresh_running();
         if self.cfg.profiles.is_empty() {
             self.set_tab(Tab::Profiles);
             self.form = Some(Form::profile(None, &Profile::default()));
@@ -405,10 +431,74 @@ impl App {
 
     // ── filas visibles (índices tras el filtro) ──────────────────────────
 
+    /// Filtradas; primero las favoritas y luego la usada más recientemente.
     pub fn db_rows(&self) -> Vec<usize> {
-        (0..self.dbs.len())
+        let mut rows: Vec<usize> = (0..self.dbs.len())
             .filter(|&i| self.db_list.matches(&self.dbs[i].name))
-            .collect()
+            .collect();
+        rows.sort_by(|&a, &b| self.db_marks.order(&self.dbs[a].name, &self.dbs[b].name));
+        rows
+    }
+
+    /// Cambia las marcas (y las guarda); la BD seleccionada sigue siéndolo
+    /// aunque cambie de puesto.
+    fn edit_marks(&mut self, f: impl FnOnce(&mut dbmarks::Marks)) {
+        let keep = self.selected_db().map(|d| d.name.clone());
+        match self.current().map(|p| p.name.clone()) {
+            Some(profile) if self.persist_marks => {
+                self.db_marks = dbmarks::edit(&profile, f);
+                self.marks_stamp = dbmarks::stamp();
+            }
+            _ => f(&mut self.db_marks),
+        }
+        if let Some(name) = keep {
+            self.select_db(&name);
+        }
+    }
+
+    fn select_db(&mut self, name: &str) {
+        if let Some(pos) = self
+            .db_rows()
+            .iter()
+            .position(|&i| self.dbs[i].name == name)
+        {
+            self.db_list.sel = pos;
+        }
+    }
+
+    fn toggle_favorite(&mut self, db: &str) {
+        let mut on = false;
+        self.edit_marks(|m| on = m.toggle_favorite(db));
+        self.toast(if on {
+            format!("★ «{db}» es favorita")
+        } else {
+            format!("«{db}» ya no es favorita")
+        });
+    }
+
+    /// Anota que se usó `db` (para el orden de la lista).
+    fn touch_db(&mut self, db: &str, what: &str) {
+        self.edit_marks(|m| m.touch(db, what));
+    }
+
+    /// Relee las marcas si otro las cambió (la IA, otra TUI).
+    fn reload_marks(&mut self, force: bool) {
+        if !self.persist_marks {
+            return;
+        }
+        let stamp = dbmarks::stamp();
+        if !force && stamp == self.marks_stamp {
+            return;
+        }
+        let Some(profile) = self.current().map(|p| p.name.clone()) else {
+            return;
+        };
+        let keep = self.selected_db().map(|d| d.name.clone());
+        self.db_marks = dbmarks::load(&profile);
+        self.marks_stamp = stamp;
+        if let Some(name) = keep {
+            self.select_db(&name);
+        }
     }
 
     pub fn backup_rows(&self) -> Vec<usize> {
@@ -417,15 +507,34 @@ impl App {
             .collect()
     }
 
+    fn set_mod_view(&mut self, v: ModView) {
+        self.mod_view = v;
+        self.focus = Pane::ModList;
+        self.mod_list.sel = 0;
+        self.mod_list.offset = 0;
+    }
+
+    /// Si `m` entra en el chip elegido.
+    pub fn in_view(&self, m: &ModuleInfo, view: ModView) -> bool {
+        match view {
+            ModView::All => true,
+            ModView::Installed => m.state == "installed",
+            ModView::Own => m.disk.is_some(),
+            ModView::Changed => m.changed(),
+            ModView::Available => m.state == "uninstalled",
+        }
+    }
+
+    /// Los del chip que coinciden con la búsqueda; con búsqueda, los mejores
+    /// primero (ver `ModuleInfo::score`).
     pub fn module_rows(&self) -> Vec<usize> {
-        (0..self.modules.len())
-            .filter(|&i| {
-                let m = &self.modules[i];
-                let changed = if m.changed() { " cambió" } else { "" };
-                self.mod_list
-                    .matches(&format!("{} {}{changed}", m.name, m.state))
-            })
-            .collect()
+        let words = modules::search_words(&self.mod_list.filter);
+        let mut rows: Vec<(u8, usize)> = (0..self.modules.len())
+            .filter(|&i| self.in_view(&self.modules[i], self.mod_view))
+            .filter_map(|i| Some((self.modules[i].score(&words)?, i)))
+            .collect();
+        rows.sort_by(|a, b| (a.0, &self.modules[a.1].name).cmp(&(b.0, &self.modules[b.1].name)));
+        rows.into_iter().map(|(_, i)| i).collect()
     }
 
     fn rows_len(&self, pane: Pane) -> usize {
@@ -498,6 +607,14 @@ impl App {
         tokio::spawn(async move {
             let r = modules::list(&p, &db).await.map_err(|e| format!("{e:#}"));
             let _ = tx.send(Ev::Modules(g, db, r));
+        });
+    }
+
+    pub fn refresh_running(&mut self) {
+        let (tx, profiles) = (self.tx.clone(), self.cfg.profiles.clone());
+        tokio::spawn(async move {
+            let r = running::scan(&profiles).await;
+            let _ = tx.send(Ev::Running(r));
         });
     }
 
@@ -680,6 +797,7 @@ impl App {
             }
             Ev::LogsEnded(seq) if seq == self.logs_seq => self.logs_job = None,
             Ev::Ai(req) => self.on_ai(req),
+            Ev::Running(r) => self.running = r,
             Ev::LoginUsers(g, db, r) if g == self.generation => match r {
                 Ok(users) if users.is_empty() => {
                     self.toast(format!("«{db}» no tiene usuarios activos"))
@@ -768,6 +886,7 @@ impl App {
             }
             Sink::Instance => {
                 self.refresh_status();
+                self.refresh_running();
                 // `docker logs -f` termina al parar el contenedor: hay que
                 // volver a engancharse. En local `tail -F` sigue solo.
                 if self.current().is_some_and(Profile::is_docker) {
@@ -831,6 +950,8 @@ impl App {
         self.inst_log.clear();
         self.restore_target = None;
         let name = self.cfg.profiles[i].name.clone();
+        self.db_list.sel = 0;
+        self.reload_marks(true);
         self.toast(format!("perfil: {name}"));
         self.refresh_dbs();
         self.refresh_backups();
@@ -856,7 +977,15 @@ impl App {
                 self.mod_list.sel = i;
                 self.toggle_mark();
             }
+            Action::Toggle(Pane::DbList, i) => {
+                self.focus = Pane::DbList;
+                self.db_list.sel = i;
+                if let Some(db) = self.selected_db().map(|d| d.name.clone()) {
+                    self.toggle_favorite(&db);
+                }
+            }
             Action::Toggle(..) => {}
+            Action::ModView(v) => self.set_mod_view(v),
             Action::Focus(p) => self.focus = p,
             Action::Filter(p) => {
                 self.focus = p;
@@ -869,11 +998,29 @@ impl App {
                 }
             }
             Action::Cmd(c) => self.cmd(c),
+            Action::OpenRunning(i) => {
+                if let Some(r) = self.running.get(i) {
+                    let url = r.url();
+                    match login::open_browser(&url) {
+                        Ok(_) => self.toast(format!("abriendo {url}")),
+                        Err(e) => self.toast(format!("✗ {e}")),
+                    }
+                }
+            }
+            Action::RunDb(i) => {
+                if let (Some(choice), Some(p)) =
+                    (self.db_pick.get(i).cloned(), self.current().cloned())
+                {
+                    self.run_only(choice, &p);
+                }
+            }
             Action::LoginAs(i) => {
                 if let Some(pick) = &self.login_pick
                     && let Some(u) = pick.users.get(i)
                 {
                     let (db, id) = (pick.db.clone(), u.id);
+                    let what = format!("conectar como {}", u.login);
+                    self.touch_db(&db, &what);
                     self.connect(db, Some(id));
                 }
             }
@@ -1055,6 +1202,14 @@ impl App {
                 } else {
                     Ok(pg::psql(&p, &db.name))
                 };
+                if spec.is_ok() {
+                    let what = if c == Cmd::DbShell {
+                        "odoo shell"
+                    } else {
+                        "psql"
+                    };
+                    self.touch_db(&db.name, what);
+                }
                 match spec {
                     Ok(spec) => self.effects.push(Effect::Interactive {
                         spec,
@@ -1139,6 +1294,11 @@ impl App {
                     Err(e) => self.toast(format!("✗ {e}")),
                 }
             }
+            Cmd::DbFavorite => {
+                if let Some(db) = self.selected_db().map(|d| d.name.clone()) {
+                    self.toggle_favorite(&db);
+                }
+            }
             Cmd::DbRunOnly => {
                 let Some(db) = self.selected_db().cloned() else {
                     return;
@@ -1146,25 +1306,37 @@ impl App {
                 if db.version.is_none() {
                     return self.toast("no es una BD de Odoo");
                 }
+                self.run_only(Some(db.name), &p);
+            }
+            Cmd::InstRunOnly => {
                 if p.is_docker() {
                     return self.toast("solo en perfiles local: en docker va en el compose");
                 }
-                if self.inst_db.as_deref() == Some(&db.name) {
-                    return self.toast(format!("Odoo ya corre solo con «{}»", db.name));
+                // La que corre sola primero, luego las demás de Odoo y al
+                // final «todas».
+                let mut pick: Vec<Option<String>> = vec![];
+                if let Some(db) = &self.inst_db {
+                    pick.push(Some(db.clone()));
                 }
-                let verb = if self.inst_status == "running" {
-                    "restart"
-                } else {
-                    "start"
-                };
-                self.run_instance(verb, Dbs::Only(db.name), &p);
-            }
-            Cmd::InstAllDbs => {
-                if self.inst_db.is_none() {
-                    return self.toast("Odoo ya corre con todas las BDs");
+                // Las demás: favoritas y recientes primero, como en BDs.
+                let mut others = self.odoo_dbs();
+                others.sort_by(|a, b| self.db_marks.order(a, b));
+                for db in others {
+                    if self.inst_db.as_deref() != Some(db) {
+                        pick.push(Some(db.to_string()));
+                    }
                 }
-                self.run_instance("restart", Dbs::All, &p);
+                if pick.is_empty() {
+                    return self.toast("no hay BDs de Odoo en este perfil");
+                }
+                pick.push(None);
+                self.db_pick = pick;
+                self.palette = Some(Palette {
+                    dbs: true,
+                    ..Palette::default()
+                });
             }
+            Cmd::InstAllDbs => self.run_only(None, &p),
             Cmd::DbLogin | Cmd::DbLoginAs => {
                 let Some(db) = self.selected_db().cloned() else {
                     return;
@@ -1173,6 +1345,7 @@ impl App {
                     return self.toast("no es una BD de Odoo");
                 }
                 if c == Cmd::DbLogin {
+                    self.touch_db(&db.name, "conectar");
                     return self.connect(db.name, None);
                 }
                 let (tx, g) = (self.tx.clone(), self.generation);
@@ -1202,6 +1375,13 @@ impl App {
             }
             Cmd::ModToggle => self.toggle_mark(),
             Cmd::ModClear => self.marks.clear(),
+            Cmd::ModNextView => self.set_mod_view(self.mod_view.next()),
+            Cmd::ModSearch => {
+                if self.tab != Tab::Modules {
+                    self.set_tab(Tab::Modules);
+                }
+                self.apply(Action::Filter(Pane::ModList));
+            }
             Cmd::ModUpdateChanged => {
                 let names: Vec<String> = self
                     .modules
@@ -1295,6 +1475,14 @@ impl App {
         let Some(db) = self.mod_db.clone() else {
             return self.toast("elige una BD");
         };
+        self.touch_db(
+            &db,
+            if install {
+                "instalar módulos"
+            } else {
+                "actualizar módulos"
+            },
+        );
         self.mod_log.clear();
         self.focus = Pane::ModLog;
         let verb = if install {
@@ -1342,6 +1530,33 @@ impl App {
             Dbs::All
         } else {
             Dbs::Same
+        };
+        self.run_instance(verb, dbs, p);
+    }
+
+    /// (Re)inicia Odoo solo con `db`, o con todas (`None`): arranca si está
+    /// detenido y reinicia si corre.
+    fn run_only(&mut self, db: Option<String>, p: &Profile) {
+        if db.is_some() && p.is_docker() {
+            return self.toast("solo en perfiles local: en docker va en el compose");
+        }
+        let running = self.inst_status == "running";
+        match &db {
+            Some(d) if self.inst_db.as_deref() == Some(d) => {
+                return self.toast(format!("Odoo ya corre solo con «{d}»"));
+            }
+            None if running && self.inst_db.is_none() => {
+                return self.toast("Odoo ya corre con todas las BDs");
+            }
+            _ => {}
+        }
+        let verb = if running { "restart" } else { "start" };
+        let dbs = match db {
+            Some(d) => {
+                self.touch_db(&d, "correr solo esta");
+                Dbs::Only(d)
+            }
+            None => Dbs::All,
         };
         self.run_instance(verb, dbs, p);
     }
@@ -1519,6 +1734,7 @@ impl App {
                         tx.log(format!("▶ renombrando «{from}» → «{to}»"));
                         pg::rename(&p, &from, &to).await?;
                         filestore::rename(&p, &from, &to, &tx).await?;
+                        crate::dbmarks::rename(&p.name, &from, &to);
                         Ok(format!("«{from}» ahora es «{to}»"))
                     }
                 });
@@ -1558,6 +1774,7 @@ impl App {
     }
 
     fn start_restore(&mut self, req: Request) {
+        self.touch_db(&req.db, "restaurar");
         self.set_tab(Tab::Restore);
         self.restore_log.clear();
         self.focus = Pane::RestoreLog;
@@ -1586,6 +1803,7 @@ impl App {
                         tx.log(format!("▶ borrando «{db}»"));
                         pg::drop(&p, &db).await?;
                         filestore::remove(&p, &db, &tx).await?;
+                        crate::dbmarks::forget(&p.name, &db);
                         Ok(format!("«{db}» borrada"))
                     }
                 });
@@ -1595,6 +1813,7 @@ impl App {
                 let Some(p) = self.current().cloned() else {
                     return;
                 };
+                self.touch_db(&db, "desinstalar módulos");
                 self.mod_log.clear();
                 self.focus = Pane::ModLog;
                 self.spawn_busy(
@@ -1852,6 +2071,30 @@ impl App {
     // ── paleta de comandos ───────────────────────────────────────────────
 
     pub fn palette_items(&self) -> Vec<(String, Action)> {
+        if self.palette.as_ref().is_some_and(|p| p.dbs) {
+            // La que corre sola, primero; el orden se decide al dibujar, con
+            // el estado más reciente (puede llegar después de abrir esto).
+            let mut order: Vec<(usize, &Option<String>)> =
+                self.db_pick.iter().enumerate().collect();
+            order.sort_by_key(|(_, c)| c.is_none() || c.as_deref() != self.inst_db.as_deref());
+            let all = order
+                .into_iter()
+                .map(|(i, c)| {
+                    let label = match c {
+                        Some(db) if self.inst_db.as_deref() == Some(db) => {
+                            format!("● {db}   corriendo sola")
+                        }
+                        Some(db) => format!("  {db}"),
+                        None if self.inst_db.is_none() && self.inst_status == "running" => {
+                            "  Todas las BDs   así corre ahora".to_string()
+                        }
+                        None => "  Todas las BDs".to_string(),
+                    };
+                    (label, Action::RunDb(i))
+                })
+                .collect();
+            return self.palette_filter(all);
+        }
         if self.palette.as_ref().is_some_and(|p| p.users) {
             let users = self.login_pick.iter().flat_map(|p| p.users.iter());
             let all = users
@@ -1875,8 +2118,10 @@ impl App {
             ("BDs: psql en la seleccionada", Cmd::DbPsql),
             ("BDs: conectar como administrador", Cmd::DbLogin),
             ("BDs: conectar como…", Cmd::DbLoginAs),
+            ("BDs: favorita sí/no", Cmd::DbFavorite),
             ("BDs: correr Odoo solo con la seleccionada", Cmd::DbRunOnly),
             ("Instancia: correr con todas las BDs", Cmd::InstAllDbs),
+            ("Instancia: correr solo con una BD…", Cmd::InstRunOnly),
             (
                 "BDs: restaurar un backup sobre la seleccionada",
                 Cmd::DbRestoreHere,
@@ -1897,6 +2142,11 @@ impl App {
             ),
             ("Módulos: desinstalar marcados", Cmd::ModUninstall),
             ("Módulos: desmarcar todo", Cmd::ModClear),
+            ("Módulos: buscar", Cmd::ModSearch),
+            (
+                "Módulos: siguiente vista (todos, instalados, propios…)",
+                Cmd::ModNextView,
+            ),
             ("Perfiles: nuevo", Cmd::ProfNew),
             ("Perfiles: editar seleccionado", Cmd::ProfEdit),
             ("Perfiles: probar conexión", Cmd::ProfTest),
@@ -2119,7 +2369,9 @@ impl App {
             (Tab::Dbs, KeyCode::Char('o')) => Cmd::DbLogin,
             (Tab::Dbs, KeyCode::Char('O')) => Cmd::DbLoginAs,
             (Tab::Dbs, KeyCode::Char('i')) => Cmd::DbRunOnly,
+            (Tab::Dbs, KeyCode::Char('*')) => Cmd::DbFavorite,
             (Tab::Instance, KeyCode::Char('a')) => Cmd::InstAllDbs,
+            (Tab::Instance, KeyCode::Char('i')) => Cmd::InstRunOnly,
             (Tab::Restore, KeyCode::Char('r')) => Cmd::Refresh,
             (Tab::Restore, KeyCode::Char('R')) => Cmd::Restore,
             (Tab::Instance, KeyCode::Char('s')) => Cmd::InstStart,
@@ -2136,6 +2388,7 @@ impl App {
             (Tab::Modules, KeyCode::Char('U')) => Cmd::ModUpdateChanged,
             (Tab::Modules, KeyCode::Char('d')) => Cmd::ModUninstall,
             (Tab::Modules, KeyCode::Char('x')) => Cmd::ModClear,
+            (Tab::Modules, KeyCode::Char('s')) => Cmd::ModNextView,
             (Tab::Modules, KeyCode::Char('b')) => Cmd::ModDb(1),
             (Tab::Modules, KeyCode::Char('B')) => Cmd::ModDb(-1),
             (Tab::Profiles, KeyCode::Char('a')) => Cmd::ProfNew,
@@ -2153,7 +2406,13 @@ impl App {
             self.filtering = None;
             return;
         };
+        let list = matches!(pane, Pane::DbList | Pane::Backups | Pane::ModList);
         match k.code {
+            // En una lista, ↑↓ eligen fila sin dejar de escribir.
+            KeyCode::Up | KeyCode::Down if list => {
+                self.focus = pane;
+                return self.move_focus(if k.code == KeyCode::Up { -1 } else { 1 });
+            }
             KeyCode::Esc => {
                 f.clear();
                 self.filtering = None;
@@ -2263,6 +2522,13 @@ impl App {
         }
         if self.ticks.is_multiple_of(20) && self.tab == Tab::Instance {
             self.refresh_status();
+        }
+        if self.ticks.is_multiple_of(4) {
+            self.reload_marks(false);
+        }
+        // Cada 3 s: qué Odoo corren (también los lanzados fuera de odotui).
+        if self.ticks.is_multiple_of(12) {
+            self.refresh_running();
         }
         if self.ticks.is_multiple_of(4) && self.cfg.theme.as_deref().is_none_or(|t| t == "omarchy")
         {
